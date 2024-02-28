@@ -50,7 +50,7 @@ constexpr auto kDocumentUploadPartSize4 = 512 * 1024;
 constexpr auto kUploadRequestInterval = crl::time(500);
 
 // How much time without upload causes additional session kill.
-constexpr auto kKillSessionTimeout = 15 * crl::time(000);
+constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
 
 [[nodiscard]] const char *ThumbnailFormat(const QString &mime) {
 	return Core::IsMimeSticker(mime) ? "WEBP" : "JPG";
@@ -114,13 +114,21 @@ Uploader::File::File(const std::shared_ptr<FileLoadResult> &file)
 
 void Uploader::File::setDocSize(int64 size) {
 	docSize = size;
-	constexpr auto limit0 = 1024 * 1024;
-	constexpr auto limit1 = 32 * limit0;
-	if (docSize >= limit0 || !setPartSize(kDocumentUploadPartSize0)) {
-		if (docSize > limit1 || !setPartSize(kDocumentUploadPartSize1)) {
-			if (!setPartSize(kDocumentUploadPartSize2)) {
-				if (!setPartSize(kDocumentUploadPartSize3)) {
-					setPartSize(kDocumentUploadPartSize4);
+	if (GetEnhancedInt("net_speed_boost") == 3) {
+		setPartSize(kDocumentUploadPartSize4);
+	} else if (GetEnhancedInt("net_speed_boost") == 2) {
+		setPartSize(kDocumentUploadPartSize3);
+	} else if (GetEnhancedInt("net_speed_boost") == 1) {
+		setPartSize(kDocumentUploadPartSize2);
+	} else {
+		constexpr auto limit0 = 1024 * 1024;
+		constexpr auto limit1 = 32 * limit0;
+		if (docSize >= limit0 || !setPartSize(kDocumentUploadPartSize0)) {
+			if (docSize > limit1 || !setPartSize(kDocumentUploadPartSize1)) {
+				if (!setPartSize(kDocumentUploadPartSize2)) {
+					if (!setPartSize(kDocumentUploadPartSize3)) {
+						setPartSize(kDocumentUploadPartSize4);
+					}
 				}
 			}
 		}
@@ -359,7 +367,7 @@ void Uploader::upload(
 void Uploader::currentFailed() {
 	auto j = queue.find(uploadingId);
 	if (j != queue.end()) {
-		const auto [msgId, file] = std::move(*j);
+		const auto &[msgId, file] = std::move(*j);
 		queue.erase(j);
 		notifyFailed(msgId, file);
 	}
@@ -640,7 +648,7 @@ void Uploader::cancelAll() {
 		currentFailed();
 	}
 	while (!queue.empty()) {
-		const auto [msgId, file] = std::move(*queue.begin());
+		const auto &[msgId, file] = std::move(*queue.begin());
 		queue.erase(queue.begin());
 		notifyFailed(msgId, file);
 	}

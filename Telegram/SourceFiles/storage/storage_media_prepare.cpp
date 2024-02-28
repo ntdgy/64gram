@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "editor/photo_editor_common.h"
 #include "platform/platform_file_utilities.h"
+#include "lang/lang_keys.h"
 #include "storage/localimageloader.h"
 #include "core/mime_type.h"
 #include "ui/image/image_prepare.h"
@@ -74,7 +75,7 @@ void PrepareDetailsInParallel(PreparedList &result, int previewWidth) {
 } // namespace
 
 bool ValidatePhotoEditorMediaDragData(not_null<const QMimeData*> data) {
-	const auto urls = base::GetMimeUrls(data);
+	const auto urls = Core::ReadMimeUrls(data);
 	if (urls.size() > 1) {
 		return false;
 	} else if (data->hasImage()) {
@@ -98,7 +99,7 @@ bool ValidatePhotoEditorMediaDragData(not_null<const QMimeData*> data) {
 bool ValidateEditMediaDragData(
 		not_null<const QMimeData*> data,
 		Ui::AlbumType albumType) {
-	const auto urls = base::GetMimeUrls(data);
+	const auto urls = Core::ReadMimeUrls(data);
 	if (urls.size() > 1) {
 		return false;
 	} else if (data->hasImage()) {
@@ -126,12 +127,11 @@ MimeDataState ComputeMimeDataState(const QMimeData *data) {
 		return MimeDataState::Image;
 	}
 
-	const auto urls = base::GetMimeUrls(data);
+	const auto urls = Core::ReadMimeUrls(data);
 	if (urls.isEmpty()) {
 		return MimeDataState::None;
 	}
 
-	auto files = QStringList();
 	auto allAreSmallImages = true;
 	for (const auto &url : urls) {
 		if (!url.isLocalFile()) {
@@ -361,9 +361,8 @@ bool ApplyModifications(PreparedList &list) {
 			continue;
 		}
 		applied = true;
-		if (!file.path.isEmpty()) {
-			file.path = QString();
-		}
+		file.path = QString();
+		file.content = QByteArray();
 		image->data = Editor::ImageModified(
 			std::move(image->data),
 			image->modifications);

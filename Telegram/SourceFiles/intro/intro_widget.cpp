@@ -31,6 +31,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/fade_wrap.h"
+#include "boxes/abstract_box.h"
 #include "core/update_checker.h"
 #include "core/application.h"
 #include "mtproto/mtproto_dc_options.h"
@@ -89,7 +90,7 @@ Widget::Widget(
 		this,
 		account,
 		rpl::single(true))) {
-	Core::App().setDefaultFloatPlayerDelegate(floatPlayerDelegate());
+	controller->setDefaultFloatPlayerDelegate(floatPlayerDelegate());
 
 	getData()->country = ComputeNewAccountCountry();
 
@@ -173,6 +174,9 @@ auto Widget::floatPlayerSectionDelegate()
 
 not_null<Ui::RpWidget*> Widget::floatPlayerWidget() {
 	return this;
+}
+
+void Widget::floatPlayerToggleGifsPaused(bool paused) {
 }
 
 auto Widget::floatPlayerGetSection(Window::Column column)

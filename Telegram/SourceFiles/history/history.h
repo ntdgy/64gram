@@ -18,9 +18,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class History;
 class HistoryBlock;
+class HistoryTranslation;
 class HistoryItem;
 struct HistoryMessageMarkupData;
 class HistoryMainElementDelegateMixin;
+struct LanguageId;
 
 namespace Main {
 class Session;
@@ -97,6 +99,8 @@ public:
 	not_null<History*> migrateToOrMe() const;
 	History *migrateFrom() const;
 	MsgRange rangeForDifferenceRequest() const;
+
+	HistoryItem *joinedMessageInstance() const;
 	void checkLocalMessages();
 	void removeJoinedMessage();
 
@@ -109,7 +113,6 @@ public:
 	Element *findLastNonEmpty() const;
 	Element *findLastDisplayed() const;
 	bool hasOrphanMediaGroupPart() const;
-	bool removeOrphanMediaGroupPart();
 	[[nodiscard]] std::vector<MsgId> collectMessagesFromParticipantToDelete(
 		not_null<PeerData*> participant) const;
 
@@ -151,7 +154,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -171,7 +174,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -182,7 +185,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -193,7 +196,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -332,17 +335,17 @@ public:
 	}
 	void setLocalDraft(std::unique_ptr<Data::Draft> &&draft) {
 		setDraft(
-			Data::DraftKey::Local(draft->topicRootId),
+			Data::DraftKey::Local(draft->reply.topicRootId),
 			std::move(draft));
 	}
 	void setLocalEditDraft(std::unique_ptr<Data::Draft> &&draft) {
 		setDraft(
-			Data::DraftKey::LocalEdit(draft->topicRootId),
+			Data::DraftKey::LocalEdit(draft->reply.topicRootId),
 			std::move(draft));
 	}
 	void setCloudDraft(std::unique_ptr<Data::Draft> &&draft) {
 		setDraft(
-			Data::DraftKey::Cloud(draft->topicRootId),
+			Data::DraftKey::Cloud(draft->reply.topicRootId),
 			std::move(draft));
 	}
 	void clearLocalDraft(MsgId topicRootId) {
@@ -366,6 +369,7 @@ public:
 	void takeLocalDraft(not_null<History*> from);
 	void applyCloudDraft(MsgId topicRootId);
 	void draftSavedToCloud(MsgId topicRootId);
+	void requestChatListMessage();
 
 	[[nodiscard]] const Data::ForwardDraft &forwardDraft(
 		MsgId topicRootId) const;
@@ -384,12 +388,12 @@ public:
 	Dialogs::BadgesState chatListBadgesState() const override;
 	HistoryItem *chatListMessage() const override;
 	bool chatListMessageKnown() const override;
-	void requestChatListMessage() override;
 	const QString &chatListName() const override;
 	const QString &chatListNameSortKey() const override;
+	int chatListNameVersion() const override;
 	const base::flat_set<QString> &chatListNameWords() const override;
 	const base::flat_set<QChar> &chatListFirstLetters() const override;
-	void loadUserpic() override;
+	void chatListPreloadData() override;
 	void paintUserpic(
 		Painter &p,
 		Ui::PeerUserpicView &view,
@@ -429,6 +433,13 @@ public:
 
 	[[nodiscard]] bool isTopPromoted() const;
 
+	void translateOfferFrom(LanguageId id);
+	[[nodiscard]] LanguageId translateOfferedFrom() const;
+	void translateTo(LanguageId id);
+	[[nodiscard]] LanguageId translatedTo() const;
+
+	[[nodiscard]] HistoryTranslation *translation() const;
+
 	const not_null<PeerData*> peer;
 
 	// Still public data.
@@ -462,6 +473,7 @@ private:
 		IsForum = (1 << 3),
 		FakeUnreadWhileOpened = (1 << 4),
 		HasPinnedMessages = (1 << 5),
+		ResolveChatListMessage = (1 << 6),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) {
@@ -548,6 +560,8 @@ private:
 	void setChatListMessageFromLast();
 	void setChatListMessageUnknown();
 	void setFakeChatListMessage();
+	void allowChatListMessageResolve();
+	void resolveChatListMessageGroup();
 
 	// Add all items to the unread mentions if we were not loaded at bottom and now are.
 	void checkAddAllToUnreadMentions();
@@ -579,8 +593,6 @@ private:
 		Dialogs::BadgesState state) const;
 	[[nodiscard]] Dialogs::UnreadState computeUnreadState() const;
 	void setFolderPointer(Data::Folder *folder);
-
-	int chatListNameVersion() const override;
 
 	void hasUnreadMentionChanged(bool has) override;
 	void hasUnreadReactionChanged(bool has) override;
@@ -621,6 +633,7 @@ private:
 		HistoryBlock *block = nullptr;
 	};
 	std::unique_ptr<BuildingBlock> _buildingFrontBlock;
+	std::unique_ptr<HistoryTranslation> _translation;
 
 	Data::HistoryDrafts _drafts;
 	base::flat_map<MsgId, TimeId> _acceptCloudDraftsAfter;
@@ -631,6 +644,7 @@ private:
 	QString _topPromotedType;
 
 	HistoryView::SendActionPainter _sendActionPainter;
+
 
 };
 

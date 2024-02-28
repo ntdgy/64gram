@@ -43,6 +43,7 @@ namespace Data {
 class Thread;
 class Folder;
 class Forum;
+struct ReactionId;
 } // namespace Data
 
 namespace Dialogs::Ui {
@@ -59,12 +60,14 @@ extern const char kOptionCtrlClickChatNewWindow[];
 class Row;
 class FakeRow;
 class IndexedList;
+class SearchTags;
 
 struct ChosenRow {
 	Key key;
 	Data::MessagePosition message;
-	bool filteredRow = false;
-	bool newWindow = false;
+	bool userpicClick : 1 = false;
+	bool filteredRow : 1 = false;
+	bool newWindow : 1 = false;
 };
 
 enum class SearchRequestType {
@@ -108,6 +111,7 @@ public:
 
 	void changeOpenedFolder(Data::Folder *folder);
 	void changeOpenedForum(Data::Forum *forum);
+	void showSavedSublists();
 	void selectSkip(int32 direction);
 	void selectSkipPage(int32 pixels, int32 direction);
 
@@ -137,7 +141,12 @@ public:
 	}
 	[[nodiscard]] bool hasFilteredResults() const;
 
-	void searchInChat(Key key, PeerData *from);
+	void searchInChat(
+		Key key,
+		PeerData *from,
+		std::vector<Data::ReactionId> tags);
+	[[nodiscard]] auto searchTagsChanges() const
+		-> rpl::producer<std::vector<Data::ReactionId>>;
 
 	void applyFilterUpdate(QString newFilter, bool force = false);
 	void onHashtagFilterUpdate(QStringView newFilter);
@@ -199,6 +208,7 @@ private:
 		NoContacts,
 		EmptyFolder,
 		EmptyForum,
+		EmptySavedSublists,
 	};
 
 	struct PinnedRow {
@@ -221,6 +231,7 @@ private:
 
 	void dialogRowReplaced(Row *oldRow, Row *newRow);
 
+	void setState(WidgetState state);
 	void editOpenedFilter();
 	void repaintCollapsedFolderRow(not_null<Data::Folder*> folder);
 	void refreshWithCollapsedRows(bool toTop = false);
@@ -229,6 +240,7 @@ private:
 	void switchToFilter(FilterId filterId);
 	bool chooseHashtag();
 	ChosenRow computeChosenRow() const;
+	bool isRowActive(not_null<Row*> row, const RowDescriptor &entry) const;
 	bool isSearchResultActive(
 		not_null<FakeRow*> result,
 		const RowDescriptor &entry) const;
@@ -245,7 +257,7 @@ private:
 		Qt::KeyboardModifiers modifiers);
 	void clearIrrelevantState();
 	void selectByMouse(QPoint globalPosition);
-	void loadPeerPhotos();
+	void preloadRowsData();
 	void scrollToItem(int top, int height);
 	void scrollToDefaultSelected();
 	void setCollapsedPressed(int pressed);
@@ -276,6 +288,7 @@ private:
 
 	int defaultRowTop(not_null<Row*> row) const;
 	void setupOnlineStatusCheck();
+	void jumpToTop();
 
 	void updateRowCornerStatusShown(not_null<History*> history);
 	void repaintDialogRowCornerStatus(not_null<History*> history);
@@ -312,6 +325,7 @@ private:
 
 	void refreshShownList();
 	[[nodiscard]] int skipTopHeight() const;
+	[[nodiscard]] int collapsedRowsOffset() const;
 	[[nodiscard]] int dialogsOffset() const;
 	[[nodiscard]] int shownHeight(int till = -1) const;
 	[[nodiscard]] int fixedOnTopCount() const;
@@ -320,6 +334,7 @@ private:
 	[[nodiscard]] int filteredIndex(int y) const;
 	[[nodiscard]] int filteredHeight(int till = -1) const;
 	[[nodiscard]] int peerSearchOffset() const;
+	[[nodiscard]] int searchInChatOffset() const;
 	[[nodiscard]] int searchedOffset() const;
 	[[nodiscard]] int searchInChatSkip() const;
 
@@ -400,6 +415,7 @@ private:
 	FilterId _filterId = 0;
 	bool _mouseSelection = false;
 	std::optional<QPoint> _lastMousePosition;
+	int _lastRowLocalMouseX = -1;
 	Qt::MouseButton _pressButton = Qt::LeftButton;
 
 	Data::Folder *_openedFolder = nullptr;
@@ -472,10 +488,14 @@ private:
 	Key _searchInChat;
 	History *_searchInMigrated = nullptr;
 	PeerData *_searchFromPeer = nullptr;
+	PeerData *_searchFromShown = nullptr;
 	mutable Ui::PeerUserpicView _searchInChatUserpic;
 	mutable Ui::PeerUserpicView _searchFromUserUserpic;
 	Ui::Text::String _searchInChatText;
 	Ui::Text::String _searchFromUserText;
+	std::unique_ptr<SearchTags> _searchTags;
+	std::vector<Data::ReactionId> _searchTagsSelected;
+	int _searchTagsLeft = 0;
 	RowDescriptor _menuRow;
 
 	base::flat_map<
@@ -499,6 +519,8 @@ private:
 	rpl::variable<ChildListShown> _childListShown;
 	float64 _narrowRatio = 0.;
 	bool _geometryInited = false;
+
+	bool _savedSublists = false;
 
 	base::unique_qptr<Ui::PopupMenu> _menu;
 

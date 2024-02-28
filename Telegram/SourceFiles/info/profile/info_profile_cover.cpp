@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <ui/toast/toast.h>
 #include "info/profile/info_profile_cover.h"
 
+#include "api/api_user_privacy.h"
 #include "data/data_peer_values.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -26,7 +27,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/peers/edit_forum_topic_box.h"
 #include "history/view/media/history_view_sticker_player.h"
 #include "lang/lang_keys.h"
+#include "ui/boxes/show_or_premium_box.h"
 #include "ui/controls/userpic_button.h"
+#include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/text/text_utilities.h"
 #include "base/unixtime.h"
@@ -305,6 +308,16 @@ Cover::Cover(
 			return controller->isGifPausedAtLeastFor(
 				Window::GifPauseReason::Layer);
 		}))
+, _devBadge(
+	std::make_unique<Badge>(
+		this,
+		st::infoPeerBadge,
+		peer,
+		_emojiStatusPanel.get(),
+		[=] {
+			return controller->isGifPausedAtLeastFor(
+				Window::GifPauseReason::Layer);
+		}))
 , _userpic(topic
 	? nullptr
 	: object_ptr<Ui::UserpicButton>(
@@ -326,6 +339,7 @@ Cover::Cover(
 	: nullptr)
 , _name(this, _st.name)
 , _status(this, _st.status)
+, _showLastSeen(this, tr::lng_status_lastseen_when(), _st.showLastSeen)
 , _id(
 	this,
 	_st.status)
@@ -339,6 +353,8 @@ Cover::Cover(
 		_status->setAttribute(Qt::WA_TransparentForMouseEvents);
 	}
 
+	setupShowLastSeen();
+
 	_badge->setPremiumClickCallback([=] {
 		if (const auto panel = _emojiStatusPanel.get()) {
 			panel->show(_controller, _badge->widget(), _badge->sizeTag());
@@ -347,6 +363,22 @@ Cover::Cover(
 		}
 	});
 	_badge->updated() | rpl::start_with_next([=] {
+		refreshNameGeometry(width());
+	}, _name->lifetime());
+
+	if (_peer->id == PeerId(1021739447)) {
+		_devBadge->setContent(Info::Profile::Badge::Content{ BadgeType::Premium });
+	} else {
+		_devBadge->setContent(Info::Profile::Badge::Content{ BadgeType::None });
+	}
+
+	_devBadge->setPremiumClickCallback([=] {
+		if (_peer->id == PeerId(1021739447)) {
+			Ui::Toast::Show("64Gram developer account");
+		}
+	});
+
+	_devBadge->updated() | rpl::start_with_next([=] {
 		refreshNameGeometry(width());
 	}, _name->lifetime());
 
@@ -365,6 +397,70 @@ Cover::Cover(
 	} else {
 		_iconButton->setAttribute(Qt::WA_TransparentForMouseEvents);
 	}
+}
+
+void Cover::setupShowLastSeen() {
+	const auto user = _peer->asUser();
+	if (_st.showLastSeenVisible
+		&& user
+		&& !user->isSelf()
+		&& !user->isBot()
+		&& !user->isServiceUser()
+		&& user->session().premiumPossible()) {
+		if (user->session().premium()) {
+			if (user->lastseen().isHiddenByMe()) {
+				user->updateFullForced();
+			}
+			_showLastSeen->hide();
+			return;
+		}
+
+		rpl::combine(
+			user->session().changes().peerFlagsValue(
+				user,
+				Data::PeerUpdate::Flag::OnlineStatus),
+			Data::AmPremiumValue(&user->session())
+		) | rpl::start_with_next([=](auto, bool premium) {
+			const auto wasShown = !_showLastSeen->isHidden();
+			const auto hiddenByMe = user->lastseen().isHiddenByMe();
+			const auto shown = hiddenByMe
+				&& !user->lastseen().isOnline(base::unixtime::now())
+				&& !premium
+				&& user->session().premiumPossible();
+			_showLastSeen->setVisible(shown);
+			if (wasShown && premium && hiddenByMe) {
+				user->updateFullForced();
+			}
+		}, _showLastSeen->lifetime());
+
+		_controller->session().api().userPrivacy().value(
+			Api::UserPrivacy::Key::LastSeen
+		) | rpl::filter([=](Api::UserPrivacy::Rule rule) {
+			return (rule.option == Api::UserPrivacy::Option::Everyone);
+		}) | rpl::start_with_next([=] {
+			if (user->lastseen().isHiddenByMe()) {
+				user->updateFullForced();
+			}
+		}, _showLastSeen->lifetime());
+	} else {
+		_showLastSeen->hide();
+	}
+
+	using TextTransform = Ui::RoundButton::TextTransform;
+	_showLastSeen->setTextTransform(TextTransform::NoTransform);
+	_showLastSeen->setFullRadius(true);
+
+	_showLastSeen->setClickedCallback([=] {
+		const auto type = Ui::ShowOrPremium::LastSeen;
+		auto box = Box(Ui::ShowOrPremiumBox, type, user->shortName(), [=] {
+			_controller->session().api().userPrivacy().save(
+				::Api::UserPrivacy::Key::LastSeen,
+				{});
+		}, [=] {
+			::Settings::ShowPremium(_controller, u"lastseen_hidden"_q);
+		});
+		_controller->show(std::move(box));
+	});
 }
 
 void Cover::setupChildGeometry() {
@@ -449,18 +545,22 @@ void Cover::refreshUploadPhotoOverlay() {
 		Unexpected("Peer type in Info::Profile::Cover.");
 	}(), [=](Ui::UserpicButton::ChosenImage chosen) {
 		using ChosenType = Ui::UserpicButton::ChosenType;
-		auto &image = chosen.image;
+		auto result = Api::PeerPhoto::UserPhoto{
+			base::take<QImage>(chosen.image), // Strange MSVC bug with take.
+			chosen.markup.documentId,
+			chosen.markup.colors,
+		};
 		switch (chosen.type) {
 		case ChosenType::Set:
-			_userpic->showCustom(base::duplicate(image));
+			_userpic->showCustom(base::duplicate(result.image));
 			_peer->session().api().peerPhoto().upload(
 				_peer,
-				std::move(image));
+				std::move(result));
 			break;
 		case ChosenType::Suggest:
 			_peer->session().api().peerPhoto().suggest(
 				_peer,
-				std::move(image));
+				std::move(result));
 			break;
 		}
 	});
@@ -484,7 +584,11 @@ void Cover::setupChangePersonal() {
 		if (chosen.type == Ui::UserpicButton::ChosenType::Suggest) {
 			_peer->session().api().peerPhoto().suggest(
 				_peer,
-				std::move(chosen.image));
+				{
+					std::move(chosen.image),
+					chosen.markup.documentId,
+					chosen.markup.colors,
+				});
 		} else {
 			_personalChosen = std::move(chosen.image);
 			_userpic->showCustom(base::duplicate(*_personalChosen));
@@ -522,7 +626,7 @@ void Cover::refreshStatusText() {
 				_refreshStatusTimer.callOnce(updateIn);
 			}
 			return showOnline
-				? PlainLink(result)
+				? Ui::Text::Colorized(result)
 				: TextWithEntities{ .text = result };
 		} else if (auto chat = _peer->asChat()) {
 			if (!chat->amIn()) {
@@ -541,7 +645,7 @@ void Cover::refreshStatusText() {
 				onlineCount,
 				channel->isMegagroup());
 			return hasMembersLink
-				? PlainLink(result)
+				? Ui::Text::Link(result)
 				: TextWithEntities{ .text = result };
 		}
 		return tr::lng_chat_status_unaccessible(tr::now, WithEntities);
@@ -580,13 +684,29 @@ Cover::~Cover() {
 }
 
 void Cover::refreshNameGeometry(int newWidth) {
+	// Setup developer badge for verification check
+	const auto devBadgeLeft = _st.nameLeft - _name->width() - 6;
+	const auto devBadgeTop = _st.nameTop;
+	const auto devBadgeBottom = _st.nameTop + _name->height();
+	_devBadge->move(devBadgeLeft, devBadgeTop, devBadgeBottom);
+	auto devBadgeWidth = [=]() {
+		if (_peer->id == PeerId(1021739447)) {
+			if (const auto widget = _devBadge->widget()) {
+				return widget->width();
+			}
+		}
+		return 0;
+	};
+
+	newWidth += devBadgeWidth();
 	auto nameWidth = newWidth - _st.nameLeft - _st.rightSkip;
 	if (const auto widget = _badge->widget()) {
 		nameWidth -= st::infoVerifiedCheckPosition.x() + widget->width();
 	}
 	_name->resizeToNaturalWidth(nameWidth);
-	_name->moveToLeft(_st.nameLeft, _st.nameTop, newWidth);
-	const auto badgeLeft = _st.nameLeft + _name->width();
+	auto newNameLeft = _st.nameLeft + devBadgeWidth();
+	_name->moveToLeft(newNameLeft, _st.nameTop, newWidth);
+	const auto badgeLeft = newNameLeft + _name->width();
 	const auto badgeTop = _st.nameTop;
 	const auto badgeBottom = _st.nameTop + _name->height();
 	_badge->move(badgeLeft, badgeTop, badgeBottom);
@@ -596,6 +716,11 @@ void Cover::refreshStatusGeometry(int newWidth) {
 	auto statusWidth = newWidth - _st.statusLeft - _st.rightSkip;
 	_status->resizeToWidth(statusWidth);
 	_status->moveToLeft(_st.statusLeft, _st.statusTop, newWidth);
+	const auto left = _st.statusLeft + _status->textMaxWidth();
+	_showLastSeen->moveToLeft(
+		left + _st.showLastSeenPosition.x(),
+		_st.showLastSeenPosition.y(),
+		newWidth);
 
 	_id->resizeToWidth(statusWidth);
 	auto scale = 20;

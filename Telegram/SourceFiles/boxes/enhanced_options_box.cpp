@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "lang/lang_keys.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
@@ -23,7 +23,7 @@ NetBoostBox::NetBoostBox(QWidget *parent) {
 }
 
 void NetBoostBox::prepare() {
-	setTitle(tr::lng_net_speed_boost_title());
+	setTitle(tr::lng_settings_net_upload_speed_boost());
 
 	addButton(tr::lng_settings_save(), [=] { save(); });
 	addButton(tr::lng_cancel(), [=] { closeBox(); });
@@ -38,6 +38,7 @@ void NetBoostBox::prepare() {
 	y += _description->height() + st::boxMediumSkip;
 
 	_boostGroup = std::make_shared<Ui::RadiobuttonGroup>(GetEnhancedInt("net_speed_boost"));
+	
 
 	for (int i = 0; i <= 3; i++) {
 		const auto button = Ui::CreateChild<Ui::Radiobutton>(

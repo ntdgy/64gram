@@ -12,7 +12,7 @@ https://github.com/TDesktop-x64/tdesktop/blob/dev/LEGAL
 #include "core/application.h"
 #include "base/parse_helper.h"
 #include "facades.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "lang/lang_cloud_manager.h"
 
 #include <QtCore/QJsonDocument>
@@ -194,6 +194,14 @@ namespace EnhancedSettings {
 			}
 		});
 
+		ReadBoolOption(settings, "net_dl_speed_boost", [&](auto v) {
+			if (v) {
+				SetNetworkDLBoost(true);
+			} else {
+				SetNetworkDLBoost(false);
+			}
+		});
+
 		ReadOption(settings, "bitrate", [&](auto v) {
 			if (v.isDouble()) {
 				int value = v.toInt();
@@ -289,6 +297,7 @@ namespace EnhancedSettings {
 
 		auto settings = QJsonObject();
 		settings.insert(qsl("net_speed_boost"), 0);
+		settings.insert(qsl("net_dl_speed_boost"), false);
 		settings.insert(qsl("show_messages_id"), false);
 		settings.insert(qsl("show_repeater_option"), false);
 		settings.insert(qsl("show_emoji_button_as_text"), false);
@@ -309,7 +318,12 @@ namespace EnhancedSettings {
 		settings.insert(qsl("disable_link_warning"), false);
 		settings.insert(qsl("blocked_user_spoiler_mode"), false);
 		settings.insert(qsl("disable_premium_animation"), false);
+		settings.insert(qsl("disable_global_search"), false);
+		settings.insert(qsl("show_group_sender_avatar"), false);
 		settings.insert(qsl("show_seconds"), false);
+		settings.insert(qsl("hide_counter"), false);
+		settings.insert(qsl("translate_to_tc"), false);
+		settings.insert(qsl("hide_stories"), false);
 
 		auto document = QJsonDocument();
 		document.setObject(settings);
@@ -335,6 +349,7 @@ namespace EnhancedSettings {
 
 		auto settings = QJsonObject();
 		settings.insert(qsl("net_speed_boost"), GetEnhancedInt("net_speed_boost"));
+		settings.insert(qsl("net_dl_speed_boost"), GetEnhancedBool("net_dl_speed_boost"));
 		settings.insert(qsl("show_messages_id"), GetEnhancedBool("show_messages_id"));
 		settings.insert(qsl("show_repeater_option"), GetEnhancedBool("show_repeater_option"));
 		settings.insert(qsl("show_emoji_button_as_text"), GetEnhancedBool("show_emoji_button_as_text"));
@@ -344,9 +359,9 @@ namespace EnhancedSettings {
 		settings.insert(qsl("disable_cloud_draft_sync"), GetEnhancedBool("disable_cloud_draft_sync"));
 		settings.insert(qsl("hide_classic_fwd"), GetEnhancedBool("hide_classic_fwd"));
 		settings.insert(qsl("show_scheduled_button"), GetEnhancedBool("show_scheduled_button"));
-		settings.insert(qsl("stereo_mode"), GetEnhancedBool("show_scheduled_button"));
+		settings.insert(qsl("stereo_mode"), GetEnhancedBool("stereo_mode"));
 		settings.insert(qsl("radio_controller"), GetEnhancedString("radio_controller"));
-		settings.insert(qsl("auto_unmute"), GetEnhancedBool("show_scheduled_button"));
+		settings.insert(qsl("auto_unmute"), GetEnhancedBool("auto_unmute"));
 		settings.insert(qsl("bitrate"), GetEnhancedInt("bitrate"));
 		settings.insert(qsl("hide_all_chats"), GetEnhancedBool("hide_all_chats"));
 		settings.insert(qsl("replace_edit_button"), GetEnhancedBool("replace_edit_button"));
@@ -355,7 +370,12 @@ namespace EnhancedSettings {
 		settings.insert(qsl("disable_link_warning"), GetEnhancedBool("disable_link_warning"));
 		settings.insert(qsl("blocked_user_spoiler_mode"), GetEnhancedBool("blocked_user_spoiler_mode"));
 		settings.insert(qsl("disable_premium_animation"), GetEnhancedBool("disable_premium_animation"));
+		settings.insert(qsl("disable_global_search"), GetEnhancedBool("disable_global_search"));
+		settings.insert(qsl("show_group_sender_avatar"), GetEnhancedBool("show_group_sender_avatar"));
 		settings.insert(qsl("show_seconds"), GetEnhancedBool("show_seconds"));
+		settings.insert(qsl("hide_counter"), GetEnhancedBool("hide_counter"));
+		settings.insert(qsl("translate_to_tc"), GetEnhancedBool("translate_to_tc"));
+		settings.insert(qsl("hide_stories"), GetEnhancedBool("hide_stories"));
 
 		auto document = QJsonDocument();
 		document.setObject(settings);

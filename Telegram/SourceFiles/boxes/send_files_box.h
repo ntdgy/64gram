@@ -7,13 +7,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include <rpl/variable.h>
-#include "boxes/abstract_box.h"
+#include "base/flags.h"
+#include "ui/layers/box_content.h"
 #include "ui/chat/attach/attach_prepare.h"
 #include "ui/chat/attach/attach_send_files_way.h"
-#include "ui/widgets/popup_menu.h"
-#include "storage/localimageloader.h"
-#include "storage/storage_media_prepare.h"
+
+namespace style {
+struct ComposeControls;
+} // namespace style
 
 namespace Window {
 class SessionController;
@@ -26,6 +27,7 @@ enum class SendType;
 
 namespace ChatHelpers {
 class TabbedPanel;
+class Show;
 } // namespace ChatHelpers
 
 namespace Ui {
@@ -48,6 +50,58 @@ namespace SendMenu {
 enum class Type;
 } // namespace SendMenu
 
+namespace HistoryView::Controls {
+class CharactersLimitLabel;
+} // namespace HistoryView::Controls
+
+enum class SendFilesAllow {
+	OnlyOne = (1 << 0),
+	Photos = (1 << 1),
+	Videos = (1 << 2),
+	Music = (1 << 3),
+	Files = (1 << 4),
+	Stickers = (1 << 5),
+	Gifs = (1 << 6),
+	EmojiWithoutPremium = (1 << 7),
+	Texts = (1 << 8),
+};
+inline constexpr bool is_flag_type(SendFilesAllow) { return true; }
+using SendFilesLimits = base::flags<SendFilesAllow>;
+
+using SendFilesCheck = Fn<bool(
+	const Ui::PreparedFile &file,
+	bool compress,
+	bool silent)>;
+
+[[nodiscard]] SendFilesLimits DefaultLimitsForPeer(not_null<PeerData*> peer);
+[[nodiscard]] SendFilesCheck DefaultCheckForPeer(
+	not_null<Window::SessionController*> controller,
+	not_null<PeerData*> peer);
+[[nodiscard]] SendFilesCheck DefaultCheckForPeer(
+	std::shared_ptr<Ui::Show> show,
+	not_null<PeerData*> peer);
+
+using SendFilesConfirmed = Fn<void(
+	Ui::PreparedList &&list,
+	Ui::SendFilesWay way,
+	TextWithTags &&caption,
+	Api::SendOptions options,
+	bool ctrlShiftEnter)>;
+
+struct SendFilesBoxDescriptor {
+	std::shared_ptr<ChatHelpers::Show> show;
+	Ui::PreparedList list;
+	TextWithTags caption;
+	PeerData *captionToPeer = nullptr;
+	SendFilesLimits limits = {};
+	SendFilesCheck check;
+	Api::SendType sendType = {};
+	SendMenu::Type sendMenuType = {};
+	const style::ComposeControls *stOverride = nullptr;
+	SendFilesConfirmed confirmed;
+	Fn<void()> cancelled;
+};
+
 class SendFilesBox : public Ui::BoxContent {
 public:
 	enum class SendLimit {
@@ -59,17 +113,12 @@ public:
 		not_null<Window::SessionController*> controller,
 		Ui::PreparedList &&list,
 		const TextWithTags &caption,
-		not_null<PeerData*> peer,
+		not_null<PeerData*> toPeer,
 		Api::SendType sendType,
 		SendMenu::Type sendMenuType);
+	SendFilesBox(QWidget*, SendFilesBoxDescriptor &&descriptor);
 
-	void setConfirmedCallback(
-		Fn<void(
-			Ui::PreparedList &&list,
-			Ui::SendFilesWay way,
-			TextWithTags &&caption,
-			Api::SendOptions options,
-			bool ctrlShiftEnter)> callback) {
+	void setConfirmedCallback(SendFilesConfirmed callback) {
 		_confirmedCallback = std::move(callback);
 	}
 	void setCancelledCallback(Fn<void()> callback) {
@@ -91,6 +140,7 @@ private:
 	public:
 		Block(
 			not_null<QWidget*> parent,
+			const style::ComposeControls &st,
 			not_null<std::vector<Ui::PreparedFile>*> items,
 			int from,
 			int till,
@@ -126,6 +176,13 @@ private:
 	[[nodiscard]] bool hasSendMenu() const;
 	[[nodiscard]] bool hasSpoilerMenu() const;
 	[[nodiscard]] bool allWithSpoilers();
+	[[nodiscard]] bool checkWithWay(
+		Ui::SendFilesWay way,
+		bool silent = false) const;
+	[[nodiscard]] bool checkWith(
+		const Ui::PreparedList &added,
+		Ui::SendFilesWay way,
+		bool silent = false) const;
 	void addMenuButton();
 	void applyBlockChanges();
 	void toggleSpoilers(bool enabled);
@@ -147,6 +204,7 @@ private:
 	void send(Api::SendOptions options, bool ctrlShiftEnter = false);
 	void sendSilent();
 	void sendScheduled();
+	void sendWhenOnline();
 	void captionResized();
 	void saveSendWaySettings();
 
@@ -156,7 +214,6 @@ private:
 	void updateControlsGeometry();
 	void updateCaptionPlaceholder();
 
-	bool canAddFiles(not_null<const QMimeData*> data) const;
 	bool addFiles(not_null<const QMimeData*> data);
 	bool addFiles(Ui::PreparedList list);
 	void addFile(Ui::PreparedFile &&file);
@@ -168,7 +225,10 @@ private:
 	void enqueueNextPrepare();
 	void addPreparedAsyncFile(Ui::PreparedFile &&file);
 
-	const not_null<Window::SessionController*> _controller;
+	void checkCharsLimitation();
+
+	const std::shared_ptr<ChatHelpers::Show> _show;
+	const style::ComposeControls &_st;
 	const Api::SendType _sendType = Api::SendType();
 
 	QString _titleText;
@@ -177,16 +237,11 @@ private:
 	Ui::PreparedList _list;
 	std::optional<int> _removingIndex;
 
-	SendLimit _sendLimit = SendLimit::Many;
-	SendMenu::Type _sendMenuType = SendMenu::Type();
-	bool _allowEmojiWithoutPremium = false;
-
-	Fn<void(
-		Ui::PreparedList &&list,
-		Ui::SendFilesWay way,
-		TextWithTags &&caption,
-		Api::SendOptions options,
-		bool ctrlShiftEnter)> _confirmedCallback;
+	SendFilesLimits _limits = {};
+	SendMenu::Type _sendMenuType = {};
+	PeerData *_captionToPeer = nullptr;
+	SendFilesCheck _check;
+	SendFilesConfirmed _confirmedCallback;
 	Fn<void()> _cancelledCallback;
 	bool _confirmed = false;
 
@@ -195,6 +250,8 @@ private:
 	object_ptr<Ui::EmojiButton> _emojiToggle = { nullptr };
 	base::unique_qptr<ChatHelpers::TabbedPanel> _emojiPanel;
 	base::unique_qptr<QObject> _emojiFilter;
+	using CharactersLimitLabel = HistoryView::Controls::CharactersLimitLabel;
+	base::unique_qptr<CharactersLimitLabel> _charsLimitation;
 
 	object_ptr<Ui::Checkbox> _groupFiles = { nullptr };
 	object_ptr<Ui::Checkbox> _sendImagesAsPhotos = { nullptr };

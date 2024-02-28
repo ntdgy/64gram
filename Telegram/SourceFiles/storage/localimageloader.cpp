@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lottie/lottie_animation.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "boxes/abstract_box.h"
 #include "boxes/send_files_box.h"
 #include "boxes/premium_limits_box.h"
 #include "ui/boxes/confirm_box.h"
@@ -183,9 +184,15 @@ struct PreparedFileThumbnail {
 	if (!bytes.isEmpty()
 		&& (bytes.size()
 			<= full.width() * full.height() * kRecompressAfterBpp / 8)
-		&& (format == u"jpeg"_q)
-		&& Images::IsProgressiveJpeg(bytes)) {
-		return bytes;
+		&& (format == u"jpeg"_q)) {
+		if (!Images::IsProgressiveJpeg(bytes)) {
+			if (const auto result = Images::MakeProgressiveJpeg(bytes)
+				; !result.isEmpty()) {
+				return result;
+			}
+		} else {
+			return bytes;
+		}
 	}
 
 	auto result = QByteArray();
@@ -215,56 +222,6 @@ int PhotoSideLimit() {
 	return PhotoSideLimit(SendLargePhotos.value());
 }
 
-SendMediaPrepare::SendMediaPrepare(
-	const QString &file,
-	const PeerId &peer,
-	SendMediaType type,
-	MsgId replyTo)
-: id(base::RandomValue<PhotoId>())
-, file(file)
-, peer(peer)
-, type(type)
-, replyTo(replyTo) {
-}
-
-SendMediaPrepare::SendMediaPrepare(
-	const QImage &img,
-	const PeerId &peer,
-	SendMediaType type,
-	MsgId replyTo)
-: id(base::RandomValue<PhotoId>())
-, img(img)
-, peer(peer)
-, type(type)
-, replyTo(replyTo) {
-}
-
-SendMediaPrepare::SendMediaPrepare(
-	const QByteArray &data,
-	const PeerId &peer,
-	SendMediaType type,
-	MsgId replyTo)
-: id(base::RandomValue<PhotoId>())
-, data(data)
-, peer(peer)
-, type(type)
-, replyTo(replyTo) {
-}
-
-SendMediaPrepare::SendMediaPrepare(
-	const QByteArray &data,
-	int duration,
-	const PeerId &peer,
-	SendMediaType type,
-	MsgId replyTo)
-: id(base::RandomValue<PhotoId>())
-, data(data)
-, peer(peer)
-, type(type)
-, duration(duration)
-, replyTo(replyTo) {
-}
-
 SendMediaReady::SendMediaReady(
 	SendMediaType type,
 	const QString &file,
@@ -278,10 +235,8 @@ SendMediaReady::SendMediaReady(
 	const MTPPhoto &photo,
 	const PreparedPhotoThumbs &photoThumbs,
 	const MTPDocument &document,
-	const QByteArray &jpeg,
-	MsgId replyTo)
-: replyTo(replyTo)
-, type(type)
+	const QByteArray &jpeg)
+: type(type)
 , file(file)
 , filename(filename)
 , filesize(filesize)
@@ -571,7 +526,7 @@ FileLoadTask::FileLoadTask(
 FileLoadTask::FileLoadTask(
 	not_null<Main::Session*> session,
 	const QByteArray &voice,
-	int32 duration,
+	crl::time duration,
 	const VoiceWaveform &waveform,
 	const FileLoadTo &to,
 	const TextWithTags &caption)
@@ -676,6 +631,7 @@ bool FileLoadTask::CheckForVideo(
 	static const auto extensions = {
 		u".mp4"_q,
 		u".mov"_q,
+		u".m4v"_q,
 		u".webm"_q,
 	};
 	if (!CheckMimeOrExtensions(filepath, result->filemime, mimes, extensions)) {
@@ -896,8 +852,9 @@ void FileLoadTask::process(Args &&args) {
 		if (auto song = std::get_if<Ui::PreparedFileInformation::Song>(
 				&_information->media)) {
 			isSong = true;
+			const auto seconds = song->duration / 1000;
 			auto flags = MTPDdocumentAttributeAudio::Flag::f_title | MTPDdocumentAttributeAudio::Flag::f_performer;
-			attributes.push_back(MTP_documentAttributeAudio(MTP_flags(flags), MTP_int(song->duration), MTP_string(song->title), MTP_string(song->performer), MTPstring()));
+			attributes.push_back(MTP_documentAttributeAudio(MTP_flags(flags), MTP_int(seconds), MTP_string(song->title), MTP_string(song->performer), MTPstring()));
 			thumbnail = PrepareFileThumbnail(std::move(song->cover));
 		} else if (auto video = std::get_if<Ui::PreparedFileInformation::Video>(
 				&_information->media)) {
@@ -911,7 +868,13 @@ void FileLoadTask::process(Args &&args) {
 			if (video->supportsStreaming) {
 				flags |= MTPDdocumentAttributeVideo::Flag::f_supports_streaming;
 			}
-			attributes.push_back(MTP_documentAttributeVideo(MTP_flags(flags), MTP_int(video->duration), MTP_int(coverWidth), MTP_int(coverHeight)));
+			const auto realSeconds = video->duration / 1000.;
+			attributes.push_back(MTP_documentAttributeVideo(
+				MTP_flags(flags),
+				MTP_double(realSeconds),
+				MTP_int(coverWidth),
+				MTP_int(coverHeight),
+				MTPint())); // preload_prefix_size
 
 			if (args.generateGoodThumbnail) {
 				goodThumbnail = video->thumbnail;
@@ -1010,8 +973,9 @@ void FileLoadTask::process(Args &&args) {
 	}
 
 	if (isVoice) {
+		const auto seconds = _duration / 1000;
 		auto flags = MTPDdocumentAttributeAudio::Flag::f_voice | MTPDdocumentAttributeAudio::Flag::f_waveform;
-		attributes[0] = MTP_documentAttributeAudio(MTP_flags(flags), MTP_int(_duration), MTPstring(), MTPstring(), MTP_bytes(documentWaveformEncode5bit(_waveform)));
+		attributes[0] = MTP_documentAttributeAudio(MTP_flags(flags), MTP_int(seconds), MTPstring(), MTPstring(), MTP_bytes(documentWaveformEncode5bit(_waveform)));
 		attributes.resize(1);
 		document = MTP_document(
 			MTP_flags(0),
@@ -1047,7 +1011,7 @@ void FileLoadTask::process(Args &&args) {
 			if (image->modifications.paint) {
 				const auto documents = ExtractStickersFromScene(image);
 				_result->attachedStickers = documents
-					| ranges::view::transform(&DocumentData::mtpInput)
+					| ranges::views::transform(&DocumentData::mtpInput)
 					| ranges::to_vector;
 			}
 		}
@@ -1089,7 +1053,7 @@ void FileLoadTask::finish() {
 	} else if (_result->filesize > kFileSizePremiumLimit
 		|| (_result->filesize > kFileSizeLimit && !premium)) {
 		Ui::show(
-			Box(FileSizeLimitBox, session, _result->filesize),
+			Box(FileSizeLimitBox, session, _result->filesize, nullptr),
 			Ui::LayerOption::KeepOther);
 		removeFromAlbum();
 	} else {

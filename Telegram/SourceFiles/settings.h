@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/integration.h"
 #include "ui/style/style_core.h"
 
 #define DeclareReadSetting(Type, Name) extern Type g##Name; \
@@ -38,8 +39,6 @@ DeclareSetting(bool, AutoStart);
 DeclareSetting(bool, StartMinimized);
 DeclareSetting(bool, StartInTray);
 DeclareSetting(bool, SendToMenu);
-DeclareSetting(bool, UseExternalVideoPlayer);
-DeclareSetting(bool, UseFreeType);
 enum LaunchMode {
 	LaunchModeNormal = 0,
 	LaunchModeAutoStart,
@@ -51,17 +50,22 @@ DeclareSetting(QString, WorkingDir);
 inline void cForceWorkingDir(const QString &newDir) {
 	cSetWorkingDir(newDir);
 	if (!gWorkingDir.isEmpty()) {
+		cSetWorkingDir(QDir(gWorkingDir).absolutePath() + '/');
 		QDir().mkpath(gWorkingDir);
 		QFile::setPermissions(gWorkingDir,
 			QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser);
 	}
 
 }
-DeclareReadSetting(QString, ExeName);
-DeclareReadSetting(QString, ExeDir);
+inline QString cExeName() {
+	return base::Integration::Instance().executableName();
+}
+inline QString cExeDir() {
+	return base::Integration::Instance().executableDir();
+}
 DeclareSetting(QString, DialogLastPath);
 DeclareSetting(QString, DialogHelperPath);
-inline const QString &cDialogHelperPathFinal() {
+inline QString cDialogHelperPathFinal() {
 	return cDialogHelperPath().isEmpty() ? cExeDir() : cDialogHelperPath();
 }
 
@@ -156,6 +160,7 @@ DeclareSetting(EnhancedSetting, EnhancedOptions);
 DeclareSetting(int, NetRequestsCount);
 DeclareSetting(int, NetUploadSessionsCount);
 DeclareSetting(int, NetUploadRequestInterval);
+DeclareSetting(int, NetDownloadChunkSize);
 
 inline bool GetEnhancedBool(const QString& key) {
 	if (!gEnhancedOptions.contains(key)) {
@@ -194,6 +199,14 @@ inline void SetNetworkBoost(int boost) {
 	cSetNetRequestsCount(2 + (2 * GetEnhancedInt("net_speed_boost")));
 	cSetNetUploadSessionsCount(2 + (2 * GetEnhancedInt("net_speed_boost")));
 	cSetNetUploadRequestInterval(500 - (100 * GetEnhancedInt("net_speed_boost")));
+}
+
+inline void SetNetworkDLBoost(bool boost) {
+	if (boost) {
+		cSetNetDownloadChunkSize(1024 * 1024);
+	} else {
+		cSetNetDownloadChunkSize(128 * 1024);
+	}
 }
 
 inline bool blockExist(int64 id) {

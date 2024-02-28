@@ -138,7 +138,7 @@ int64 mtpFileLoader::takeNextRequestOffset() {
 	Expects(readyToRequest());
 
 	const auto result = _nextRequestOffset;
-	_nextRequestOffset += Storage::kDownloadPartSize;
+	_nextRequestOffset += cNetDownloadChunkSize();
 	return result;
 }
 
@@ -164,7 +164,7 @@ bool mtpFileLoader::feedPart(int64 offset, const QByteArray &bytes) {
 }
 
 void mtpFileLoader::cancelOnFail() {
-	cancel(true);
+	cancel(FailureReason::OtherFailure);
 }
 
 bool mtpFileLoader::setWebFileSizeHook(int64 size) {
@@ -176,7 +176,7 @@ bool mtpFileLoader::setWebFileSizeHook(int64 size) {
 		"Bad size provided by bot for webDocument: %1, real: %2"
 		).arg(_fullSize
 		).arg(size));
-	cancel(true);
+	cancel(FailureReason::OtherFailure);
 	return false;
 }
 
@@ -188,8 +188,8 @@ void mtpFileLoader::startLoadingWithPartial(const QByteArray &data) {
 	Expects(data.startsWith("partial:"));
 
 	constexpr auto kPrefix = 8;
-	const auto parts = (data.size() - kPrefix) / Storage::kDownloadPartSize;
-	const auto use = parts * int64(Storage::kDownloadPartSize);
+	const auto parts = (data.size() - kPrefix) / cNetDownloadChunkSize();
+	const auto use = parts * int64(cNetDownloadChunkSize());
 	if (use > 0) {
 		_nextRequestOffset = use;
 		feedPart(0, QByteArray::fromRawData(data.data() + kPrefix, use));

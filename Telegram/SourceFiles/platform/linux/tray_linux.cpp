@@ -23,15 +23,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Platform {
 
-namespace {
-
-[[nodiscard]] QWidget *Parent() {
-	Expects(Core::App().primaryWindow() != nullptr);
-	return Core::App().primaryWindow()->widget();
-}
-
-} // namespace
-
 class IconGraphic final {
 public:
 	explicit IconGraphic();
@@ -67,7 +58,7 @@ private:
 	const QString _mutePanelTrayIconName;
 	const QString _attentionPanelTrayIconName;
 
-	const int _iconSizes[5];
+	const int _iconSizes[7];
 
 	bool _muted = true;
 	int32 _count = 0;
@@ -82,7 +73,7 @@ IconGraphic::IconGraphic()
 : _panelTrayIconName("telegram-panel")
 , _mutePanelTrayIconName("telegram-mute-panel")
 , _attentionPanelTrayIconName("telegram-attention-panel")
-, _iconSizes{ 16, 22, 24, 32, 48 } {
+, _iconSizes{ 16, 22, 32, 48, 64, 128, 256 } {
 }
 
 IconGraphic::~IconGraphic() = default;
@@ -100,7 +91,7 @@ QIcon IconGraphic::systemIcon(
 		int counter,
 		bool muted) const {
 	if (iconThemeName == _themeName
-		&& counterSlice(counter) == _count
+		&& (counter > 0) == (_count > 0)
 		&& muted == _muted) {
 		return _systemIcon;
 	}
@@ -223,45 +214,13 @@ QIcon IconGraphic::trayIcon(
 			}
 		}
 
-		auto iconImage = currentImageBack;
-
-		if (counter > 0) {
-			const auto &bg = muted
-				? st::trayCounterBgMute
-				: st::trayCounterBg;
-			const auto &fg = st::trayCounterFg;
-			if (iconSize >= 22) {
-				const auto imageSize = dprSize(iconImage);
-				const auto layerSize = (iconSize >= 48)
-					? 32
-					: (iconSize >= 36)
-					? 24
-					: (iconSize >= 32)
-					? 20
-					: 16;
-				const auto layer = Window::GenerateCounterLayer({
-					.size = layerSize,
-					.count = counter,
-					.bg = bg,
-					.fg = fg,
-				});
-
-				QPainter p(&iconImage);
-				p.drawImage(
-					imageSize.width() - layer.width() - 1,
-					imageSize.height() - layer.height() - 1,
-					layer);
-			} else {
-				iconImage = Window::WithSmallCounter(std::move(iconImage), {
-					.size = 16,
-					.count = counter,
-					.bg = bg,
-					.fg = fg,
-				});
-			}
-		}
-
-		result.addPixmap(Ui::PixmapFromImage(std::move(iconImage)));
+		result.addPixmap(Ui::PixmapFromImage(counter > 0
+			? Window::WithSmallCounter(std::move(currentImageBack), {
+				.size = iconSize,
+				.count = counter,
+				.bg = muted ? st::trayCounterBgMute : st::trayCounterBg,
+				.fg = st::trayCounterFg,
+			}) : std::move(currentImageBack)));
 	}
 
 	updateIconRegenerationNeeded(
@@ -334,7 +293,7 @@ void Tray::createIcon() {
 		const auto counter = Core::App().unreadBadge();
 		const auto muted = Core::App().unreadBadgeMuted();
 
-		_icon = base::make_unique_q<QSystemTrayIcon>(Parent());
+		_icon = base::make_unique_q<QSystemTrayIcon>(nullptr);
 		_icon->setIcon(_iconGraphic->trayIcon(
 			_iconGraphic->systemIcon(
 				iconThemeName,
@@ -404,7 +363,7 @@ void Tray::updateIcon() {
 
 void Tray::createMenu() {
 	if (!_menu) {
-		_menu = base::make_unique_q<QMenu>(Parent());
+		_menu = base::make_unique_q<QMenu>(nullptr);
 	}
 	if (!_menuXEmbed) {
 		_menuXEmbed = base::make_unique_q<Ui::PopupMenu>(nullptr);

@@ -40,7 +40,7 @@ jobs:
 
   snap:
     name: Ubuntu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     env:
       UPLOAD_ARTIFACT: "false"
@@ -59,6 +59,9 @@ jobs:
           sudo usermod -aG lxd $USER
           sudo snap run lxd init --auto
           sudo snap run lxd waitready
+
+      - name: Free up some disk space.
+        uses: jlumbroso/free-disk-space@f68fdb76e2ea636224182cfb7377ff9a1708f9b8
 
       - name: Telegram Desktop snap build.
         run: sg lxd -c 'snap run snapcraft -v'

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
+#include "data/data_channel.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
 #include "data/data_document_media.h"
@@ -18,13 +19,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer.h"
 #include "data/data_message_reactions.h"
 #include "data/stickers/data_stickers.h"
+#include "dialogs/ui/dialogs_stories_content.h"
+#include "dialogs/ui/dialogs_stories_content.h"
 #include "lottie/lottie_common.h"
 #include "lottie/lottie_frame_generator.h"
 #include "ffmpeg/ffmpeg_frame_generator.h"
 #include "chat_helpers/stickers_lottie.h"
-#include "ui/widgets/input_fields.h"
+#include "storage/file_download.h" // kMaxFileInMemory
+#include "ui/widgets/fields/input_field.h"
+#include "ui/text/custom_emoji_instance.h"
 #include "ui/text/text_custom_emoji.h"
 #include "ui/text/text_utilities.h"
+#include "ui/dynamic_thumbnails.h"
 #include "ui/ui_utility.h"
 #include "apiwrap.h"
 #include "styles/style_chat.h"
@@ -63,6 +69,7 @@ private:
 	case SizeTag::Normal: return LottieSize::EmojiInteraction;
 	case SizeTag::Large: return LottieSize::EmojiInteractionReserved1;
 	case SizeTag::Isolated: return LottieSize::EmojiInteractionReserved2;
+	case SizeTag::SetIcon: return LottieSize::EmojiInteractionReserved3;
 	}
 	Unexpected("SizeTag value in CustomEmojiManager-LottieSizeFromTag.");
 }
@@ -74,6 +81,9 @@ private:
 	case SizeTag::Isolated:
 		return (st::largeEmojiSize + 2 * st::largeEmojiOutline)
 			* style::DevicePixelRatio();
+	case SizeTag::SetIcon:
+		return int(style::ConvertScale(18 * 7 / 6., style::Scale()))
+			* style::DevicePixelRatio();
 	}
 	Unexpected("SizeTag value in CustomEmojiManager-SizeFromTag.");
 }
@@ -82,6 +92,22 @@ private:
 	return sizeOverride
 		? (sizeOverride * style::DevicePixelRatio())
 		: FrameSizeFromTag(tag);
+}
+
+[[nodiscard]] QString InternalPrefix() {
+	return u"internal:"_q;
+}
+
+[[nodiscard]] QString UserpicEmojiPrefix() {
+	return u"userpic:"_q;
+}
+
+[[nodiscard]] QString InternalPadding(QMargins value) {
+	return value.isNull() ? QString() : QString(",%1,%2,%3,%4"
+	).arg(value.left()
+	).arg(value.top()
+	).arg(value.right()
+	).arg(value.bottom());
 }
 
 } // namespace
@@ -332,7 +358,6 @@ void CustomEmojiLoader::check() {
 	const auto tag = _tag;
 	const auto sizeOverride = int(_sizeOverride);
 	const auto size = FrameSizeFromTag(_tag, _sizeOverride);
-	auto bytes = Lottie::ReadContent(data, filepath);
 	auto loader = [=] {
 		return std::make_unique<CustomEmojiLoader>(
 			document,
@@ -340,7 +365,12 @@ void CustomEmojiLoader::check() {
 			sizeOverride);
 	};
 	auto put = [=, key = cacheKey(document)](QByteArray value) {
-		document->owner().cacheBigFile().put(key, std::move(value));
+		const auto size = value.size();
+		if (size <= Storage::kMaxFileInMemory) {
+			document->owner().cacheBigFile().put(key, std::move(value));
+		} else {
+			LOG(("Data Error: Cached emoji size too big: %1.").arg(size));
+		}
 	};
 	const auto type = document->sticker()->type;
 	auto generator = [=, bytes = Lottie::ReadContent(data, filepath)]()
@@ -393,7 +423,7 @@ Ui::CustomEmoji::Preview CustomEmojiLoader::preview() {
 	const auto make = [&](not_null<DocumentData*> document) -> Preview {
 		const auto dimensions = document->dimensions;
 		if (!document->inlineThumbnailIsPath()
-			|| !dimensions.width()) {
+			|| dimensions.isEmpty()) {
 			return {};
 		}
 		const auto scale = (FrameSizeFromTag(_tag, _sizeOverride) * 1.)
@@ -421,10 +451,6 @@ CustomEmojiManager::CustomEmojiManager(not_null<Session*> owner)
 			QString()).toULongLong();
 		if (setId) {
 			_coloredSetId = setId;
-			auto pending = base::take(_coloredSetPending);
-			for (const auto &instance : pending[setId]) {
-				instance->setColored();
-			}
 		}
 	}, _lifetime);
 }
@@ -456,12 +482,6 @@ std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::create(
 			}, std::move(repaint))).first;
 		if (colored) {
 			i->second->setColored();
-		} else if (_coloredSetId) {
-			if (_coloredSetId == setId) {
-				i->second->setColored();
-			}
-		} else if (setId) {
-			_coloredSetPending[setId].emplace(i->second.get());
 		}
 	} else if (!i->second->hasImagePreview()) {
 		auto preview = prepareNonExactPreview(documentId, tag, sizeOverride);
@@ -472,6 +492,14 @@ std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::create(
 	return std::make_unique<Ui::CustomEmoji::Object>(
 		i->second.get(),
 		std::move(update));
+}
+
+Ui::Text::CustomEmojiFactory CustomEmojiManager::factory(
+		SizeTag tag,
+		int sizeOverride) {
+	return [=](QStringView data, Fn<void()> update) {
+		return create(data, std::move(update), tag, sizeOverride);
+	};
 }
 
 Ui::CustomEmoji::Preview CustomEmojiManager::prepareNonExactPreview(
@@ -506,6 +534,13 @@ std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::create(
 		Fn<void()> update,
 		SizeTag tag,
 		int sizeOverride) {
+	if (data.startsWith(InternalPrefix())) {
+		return internal(data);
+	} else if (data.startsWith(UserpicEmojiPrefix())) {
+		const auto ratio = style::DevicePixelRatio();
+		const auto size = EmojiSizeFromTag(tag) / ratio;
+		return userpic(data, std::move(update), size);
+	}
 	const auto parsed = ParseCustomEmojiData(data);
 	return parsed
 		? create(parsed, std::move(update), tag, sizeOverride)
@@ -530,6 +565,46 @@ std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::create(
 	return create(document->id, std::move(update), tag, sizeOverride, [&] {
 		return createLoaderWithSetId(document, tag, sizeOverride);
 	});
+}
+
+std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::internal(
+		QStringView data) {
+	const auto v = data.mid(InternalPrefix().size()).split(',');
+	if (v.size() != 5 && v.size() != 1) {
+		return nullptr;
+	}
+	const auto index = v[0].toInt();
+	Assert(index >= 0 && index < _internalEmoji.size());
+
+	auto &info = _internalEmoji[index];
+	const auto padding = (v.size() == 5)
+		? QMargins(v[1].toInt(), v[2].toInt(), v[3].toInt(), v[4].toInt())
+		: QMargins();
+	return std::make_unique<Ui::CustomEmoji::Internal>(
+		data.toString(),
+		info.image,
+		padding,
+		info.textColor);
+}
+
+std::unique_ptr<Ui::Text::CustomEmoji> CustomEmojiManager::userpic(
+		QStringView data,
+		Fn<void()> update,
+		int size) {
+	const auto v = data.mid(UserpicEmojiPrefix().size()).split(',');
+	if (v.size() != 5 && v.size() != 1) {
+		return nullptr;
+	}
+	const auto id = PeerId(v[0].toULongLong());
+	const auto padding = (v.size() == 5)
+		? QMargins(v[1].toInt(), v[2].toInt(), v[3].toInt(), v[4].toInt())
+		: QMargins();
+	return std::make_unique<Ui::CustomEmoji::DynamicImageEmoji>(
+		data.toString(),
+		Ui::MakeUserpicThumbnail(_owner->peer(id)),
+		std::move(update),
+		padding,
+		size);
 }
 
 void CustomEmojiManager::resolve(
@@ -681,30 +756,12 @@ void CustomEmojiManager::request() {
 }
 
 void CustomEmojiManager::fillColoredFlags(not_null<DocumentData*> document) {
-	const auto id = document->id;
-	const auto setColored = [&] {
+	if (document->emojiUsesTextColor()) {
+		const auto id = document->id;
 		for (auto &instances : _instances) {
 			const auto i = instances.find(id);
 			if (i != end(instances)) {
 				i->second->setColored();
-			}
-		}
-	};
-	if (document->emojiUsesTextColor()) {
-		setColored();
-		return;
-	}
-	const auto sticker = document->sticker();
-	const auto setId = sticker ? sticker->set.id : uint64();
-	if (!setId || (_coloredSetId && setId != _coloredSetId)) {
-		return;
-	} else if (setId == _coloredSetId) {
-		setColored();
-	} else {
-		for (auto &instances : _instances) {
-			const auto i = instances.find(id);
-			if (i != end(instances)) {
-				_coloredSetPending[setId].emplace(i->second.get());
 			}
 		}
 	}
@@ -895,6 +952,49 @@ uint64 CustomEmojiManager::coloredSetId() const {
 	return _coloredSetId;
 }
 
+QString CustomEmojiManager::registerInternalEmoji(
+		QImage emoji,
+		QMargins padding,
+		bool textColor) {
+	_internalEmoji.push_back({ std::move(emoji), textColor });
+	return InternalPrefix()
+		+ QString::number(_internalEmoji.size() - 1)
+		+ InternalPadding(padding);
+}
+
+QString CustomEmojiManager::registerInternalEmoji(
+		const style::icon &icon,
+		QMargins padding,
+		bool textColor) {
+	const auto i = _iconEmoji.find(&icon);
+	if (i != end(_iconEmoji)) {
+		return i->second + InternalPadding(padding);
+	}
+	auto image = QImage(
+		icon.size() * style::DevicePixelRatio(),
+		QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+	image.setDevicePixelRatio(style::DevicePixelRatio());
+	auto p = QPainter(&image);
+	icon.paint(p, 0, 0, icon.width());
+	p.end();
+
+	const auto result = registerInternalEmoji(
+		std::move(image),
+		QMargins{},
+		textColor);
+	_iconEmoji.emplace(&icon, result);
+	return result + InternalPadding(padding);
+}
+
+[[nodiscard]] QString CustomEmojiManager::peerUserpicEmojiData(
+		not_null<PeerData*> peer,
+		QMargins padding) {
+	return UserpicEmojiPrefix()
+		+ QString::number(peer->id.value)
+		+ InternalPadding(padding);
+}
+
 int FrameSizeFromTag(SizeTag tag) {
 	const auto emoji = EmojiSizeFromTag(tag);
 	const auto factor = style::DevicePixelRatio();
@@ -921,8 +1021,21 @@ TextWithEntities SingleCustomEmoji(not_null<DocumentData*> document) {
 	return SingleCustomEmoji(document->id);
 }
 
-bool AllowEmojiWithoutPremium(not_null<PeerData*> peer) {
-	return peer->isSelf();
+bool AllowEmojiWithoutPremium(
+		not_null<PeerData*> peer,
+		DocumentData *exactEmoji) {
+	if (peer->isSelf()) {
+		return true;
+	} else if (!exactEmoji) {
+		return false;
+	} else if (const auto sticker = exactEmoji->sticker()) {
+		if (const auto channel = peer->asMegagroup()) {
+			if (channel->mgInfo->emojiSet.id == sticker->set.id) {
+				return (sticker->set.id != 0);
+			}
+		}
+	}
+	return false;
 }
 
 void InsertCustomEmoji(

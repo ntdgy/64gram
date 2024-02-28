@@ -8,10 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/runtime_composer.h"
-#include "base/flags.h"
 #include "data/data_media_types.h"
 #include "history/history_item_edition.h"
-#include "history/history_item_reply_markup.h"
 
 #include <any>
 
@@ -21,10 +19,14 @@ struct HistoryMessageReply;
 struct HistoryMessageViews;
 struct HistoryMessageMarkupData;
 struct HistoryMessageReplyMarkup;
+struct HistoryMessageTranslation;
+struct HistoryMessageForwarded;
+struct HistoryMessageSavedMediaData;
 struct HistoryServiceDependentData;
 enum class HistorySelfDestructType;
 struct PreparedServiceText;
 class ReplyKeyboard;
+struct LanguageId;
 
 namespace base {
 template <typename Enum>
@@ -55,6 +57,8 @@ class MessageReactions;
 class ForumTopic;
 class Thread;
 struct SponsoredFrom;
+class Story;
+class SavedSublist;
 } // namespace Data
 
 namespace Main {
@@ -115,7 +119,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -145,7 +149,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -157,7 +161,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -169,13 +173,14 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
 		not_null<GameData*> game,
 		HistoryMessageMarkupData &&markup);
+	HistoryItem(not_null<History*> history, not_null<Data::Story*> story);
 	~HistoryItem();
 
 	struct Destroyer {
@@ -183,13 +188,18 @@ public:
 	};
 
 	void dependencyItemRemoved(not_null<HistoryItem*> dependency);
+	void dependencyStoryRemoved(not_null<Data::Story*> dependency);
 	void updateDependencyItem();
 	[[nodiscard]] MsgId dependencyMsgId() const;
 	[[nodiscard]] bool notificationReady() const;
 	[[nodiscard]] PeerData *specialNotificationPeer() const;
+	void checkStoryForwardInfo();
 	void checkBuyButton();
 
+	void resolveDependent();
+
 	void updateServiceText(PreparedServiceText &&text);
+	void updateStoryMentionText();
 
 	[[nodiscard]] UserData *viaBot() const;
 	[[nodiscard]] UserData *getMessageBot() const;
@@ -233,6 +243,9 @@ public:
 	[[nodiscard]] bool isPinned() const {
 		return _flags & MessageFlag::Pinned;
 	}
+	[[nodiscard]] bool invertMedia() const {
+		return _flags & MessageFlag::InvertMedia;
+	}
 	[[nodiscard]] bool unread(not_null<Data::Thread*> thread) const;
 	[[nodiscard]] bool showNotification() const;
 	void markClientSideAsRead();
@@ -259,6 +272,8 @@ public:
 	[[nodiscard]] bool definesReplyKeyboard() const;
 	[[nodiscard]] ReplyMarkupFlags replyKeyboardFlags() const;
 
+	void cacheOnlyEmojiAndSpaces(bool only);
+	[[nodiscard]] bool isOnlyEmojiAndSpaces() const;
 	[[nodiscard]] bool hasSwitchInlineButton() const {
 		return _flags & MessageFlag::HasSwitchInlineButton;
 	}
@@ -302,6 +317,12 @@ public:
 	[[nodiscard]] bool isLocal() const {
 		return _flags & MessageFlag::Local;
 	}
+	[[nodiscard]] bool isFakeAboutView() const {
+		return _flags & MessageFlag::FakeAboutView;
+	}
+	[[nodiscard]] bool showSimilarChannels() const {
+		return _flags & MessageFlag::ShowSimilarChannels;
+	}
 	[[nodiscard]] bool isRegular() const;
 	[[nodiscard]] bool isUploading() const;
 	void sendFailed();
@@ -310,6 +331,8 @@ public:
 	[[nodiscard]] bool repliesAreComments() const;
 	[[nodiscard]] bool externalReply() const;
 	[[nodiscard]] bool hasExtendedMediaPreview() const;
+	[[nodiscard]] bool inHighlightProcess() const;
+	void highlightProcessDone();
 
 	void setCommentsInboxReadTill(MsgId readTillId);
 	void setCommentsMaxId(MsgId maxId);
@@ -323,6 +346,7 @@ public:
 
 	[[nodiscard]] bool isService() const;
 	void applyEdition(HistoryMessageEdition &&edition);
+	void applyChanges(not_null<Data::Story*> story);
 
 	void applyEdition(const MTPDmessageService &message);
 	void applyEdition(const MTPMessageExtendedMedia &media);
@@ -346,9 +370,18 @@ public:
 	[[nodiscard]] Storage::SharedMediaTypesMask sharedMediaTypes() const;
 
 	void indexAsNewItem();
+	void addToSharedMediaIndex();
+	void removeFromSharedMediaIndex();
 
+	struct NotificationTextOptions {
+		bool spoilerLoginCode = false;
+	};
 	[[nodiscard]] QString notificationHeader() const;
-	[[nodiscard]] TextWithEntities notificationText() const;
+	[[nodiscard]] TextWithEntities notificationText(
+		NotificationTextOptions options) const;
+	[[nodiscard]] TextWithEntities notificationText() const {
+		return notificationText({});
+	}
 
 	using ToPreviewOptions = HistoryView::ToPreviewOptions;
 	using ItemPreview = HistoryView::ItemPreview;
@@ -357,8 +390,9 @@ public:
 	// Example: "[link1-start]You:[link1-end] [link1-start]Photo,[link1-end] caption text"
 	[[nodiscard]] ItemPreview toPreview(ToPreviewOptions options) const;
 	[[nodiscard]] TextWithEntities inReplyText() const;
-	[[nodiscard]] TextWithEntities originalText() const;
-	[[nodiscard]] TextWithEntities originalTextWithLocalEntities() const;
+	[[nodiscard]] const TextWithEntities &originalText() const;
+	[[nodiscard]] const TextWithEntities &translatedText() const;
+	[[nodiscard]] TextWithEntities translatedTextWithLocalEntities() const;
 	[[nodiscard]] const std::vector<ClickHandlerPtr> &customTextLinks() const;
 	[[nodiscard]] TextForMimeData clipboardText() const;
 
@@ -392,6 +426,14 @@ public:
 	[[nodiscard]] bool suggestReport() const;
 	[[nodiscard]] bool suggestBanReport() const;
 	[[nodiscard]] bool suggestDeleteAllReport() const;
+	[[nodiscard]] ChatRestriction requiredSendRight() const;
+	[[nodiscard]] bool requiresSendInlineRight() const;
+	[[nodiscard]] std::optional<QString> errorTextForForward(
+		not_null<Data::Thread*> to) const;
+	[[nodiscard]] const HistoryMessageTranslation *translation() const;
+	[[nodiscard]] bool translationShowRequiresCheck(LanguageId to) const;
+	bool translationShowRequiresRequest(LanguageId to);
+	void translationDone(LanguageId to, TextWithEntities result);
 
 	[[nodiscard]] bool canReact() const;
 	enum class ReactionSource {
@@ -415,7 +457,9 @@ public:
 		not_null<UserData*> from) const;
 	[[nodiscard]] crl::time lastReactionsRefreshTime() const;
 
+	[[nodiscard]] bool reactionsAreTags() const;
 	[[nodiscard]] bool hasDirectLink() const;
+	[[nodiscard]] bool changesWallPaper() const;
 
 	[[nodiscard]] FullMsgId fullId() const;
 	[[nodiscard]] GlobalMsgId globalId() const;
@@ -431,18 +475,31 @@ public:
 	void setText(const TextWithEntities &textWithEntities);
 
 	[[nodiscard]] MsgId replyToId() const;
+	[[nodiscard]] FullMsgId replyToFullId() const;
 	[[nodiscard]] MsgId replyToTop() const;
 	[[nodiscard]] MsgId topicRootId() const;
+	[[nodiscard]] FullStoryId replyToStory() const;
+	[[nodiscard]] FullReplyTo replyTo() const;
 	[[nodiscard]] bool inThread(MsgId rootId) const;
 
 	[[nodiscard]] not_null<PeerData*> author() const;
 
-	[[nodiscard]] TimeId dateOriginal() const;
-	[[nodiscard]] PeerData *senderOriginal() const;
-	[[nodiscard]] const HiddenSenderInfo *hiddenSenderInfo() const;
+	[[nodiscard]] TimeId originalDate() const;
+	[[nodiscard]] PeerData *originalSender() const;
+	[[nodiscard]] const HiddenSenderInfo *originalHiddenSenderInfo() const;
 	[[nodiscard]] not_null<PeerData*> fromOriginal() const;
-	[[nodiscard]] QString authorOriginal() const;
-	[[nodiscard]] MsgId idOriginal() const;
+	[[nodiscard]] QString originalPostAuthor() const;
+	[[nodiscard]] MsgId originalId() const;
+
+	[[nodiscard]] Data::SavedSublist *savedSublist() const;
+	[[nodiscard]] PeerData *savedSublistPeer() const;
+	[[nodiscard]] PeerData *savedFromSender() const;
+	[[nodiscard]] const HiddenSenderInfo *savedFromHiddenSenderInfo() const;
+
+	[[nodiscard]] const HiddenSenderInfo *displayHiddenSenderInfo() const;
+
+	[[nodiscard]] bool showForwardsFromSender(
+		not_null<const HistoryMessageForwarded*> forwarded) const;
 
 	[[nodiscard]] bool isEmpty() const;
 
@@ -461,6 +518,12 @@ public:
 	[[nodiscard]] bool isDiscussionPost() const;
 	[[nodiscard]] HistoryItem *lookupDiscussionPostOriginal() const;
 	[[nodiscard]] PeerData *displayFrom() const;
+	[[nodiscard]] uint8 colorIndex() const;
+
+	// In forwards we show name in sender's color, but the message
+	// content uses the color of the original sender.
+	[[nodiscard]] PeerData *contentColorsFrom() const;
+	[[nodiscard]] uint8 contentColorIndex() const;
 
 	[[nodiscard]] std::unique_ptr<HistoryView::Element> createView(
 		not_null<HistoryView::ElementDelegate*> delegate,
@@ -474,6 +537,10 @@ public:
 		return _ttlDestroyAt;
 	}
 
+	[[nodiscard]] int boostsApplied() const {
+		return _boostsApplied;
+	}
+	
 	[[nodiscard]] TextWithEntities getOriginalMessage() const {
 		return _originalMsg;
 	}
@@ -487,11 +554,6 @@ public:
 private:
 	struct CreateConfig;
 
-	struct SavedMediaData {
-		TextWithEntities text;
-		std::unique_ptr<Data::Media> media;
-	};
-
 	HistoryItem(
 		not_null<History*> history,
 		MsgId id,
@@ -501,7 +563,7 @@ private:
 
 	void createComponentsHelper(
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		const QString &postAuthor,
 		HistoryMessageMarkupData &&markup);
@@ -511,7 +573,7 @@ private:
 	[[nodiscard]] bool generateLocalEntitiesByReply() const;
 	[[nodiscard]] TextWithEntities withLocalEntities(
 		const TextWithEntities &textWithEntities) const;
-	void setTextValue(TextWithEntities text);
+	void setTextValue(TextWithEntities text, bool force = false);
 	[[nodiscard]] bool isTooOldForEdit(TimeId now) const;
 	[[nodiscard]] bool isLegacyMessage() const {
 		return _flags & MessageFlag::Legacy;
@@ -535,9 +597,10 @@ private:
 	[[nodiscard]] auto GetServiceDependentData() const
 		-> const HistoryServiceDependentData *;
 	void updateDependentServiceText();
-	bool updateServiceDependent(bool force = false);
+	void updateServiceDependent(bool force = false);
 	void setServiceText(PreparedServiceText &&prepared);
 
+	void setStoryFields(not_null<Data::Story*> story);
 	void finishEdition(int oldKeyboardTop);
 	void finishEditionToEmpty();
 
@@ -545,10 +608,16 @@ private:
 	void setupChatThemeChange();
 	void setupTTLChange();
 
-	void setSelfDestruct(HistorySelfDestructType type, int ttlSeconds);
+	void translationToggle(
+		not_null<HistoryMessageTranslation*> translation,
+		bool used);
+	void setSelfDestruct(HistorySelfDestructType type, MTPint mtpTTLvalue);
 
-	TextWithEntities fromLinkText() const;
-	ClickHandlerPtr fromLink() const;
+	void resolveDependent(not_null<HistoryServiceDependentData*> dependent);
+	void resolveDependent(not_null<HistoryMessageReply*> reply);
+
+	[[nodiscard]] TextWithEntities fromLinkText() const;
+	[[nodiscard]] ClickHandlerPtr fromLink() const;
 
 	void setGroupId(MessageGroupId groupId);
 
@@ -575,24 +644,25 @@ private:
 	// It should show the receipt for the payed invoice. Still let mobile apps do that.
 	void replaceBuyWithReceiptInMarkup();
 
-	void setSponsoredFrom(const Data::SponsoredFrom &from);
-
 	[[nodiscard]] PreparedServiceText preparePinnedText();
 	[[nodiscard]] PreparedServiceText prepareGameScoreText();
 	[[nodiscard]] PreparedServiceText preparePaymentSentText();
+	[[nodiscard]] PreparedServiceText prepareStoryMentionText();
 	[[nodiscard]] PreparedServiceText prepareInvitedToCallText(
 		const std::vector<not_null<UserData*>> &users,
 		CallId linkCallId);
 	[[nodiscard]] PreparedServiceText prepareCallScheduledText(
 		TimeId scheduleDate);
 
+	[[nodiscard]] PeerData *computeDisplayFrom() const;
+
 	const not_null<History*> _history;
 	const not_null<PeerData*> _from;
-	MessageFlags _flags = 0;
+	mutable PeerData *_displayFrom = nullptr;
+	mutable MessageFlags _flags = 0;
 
 	TextWithEntities _text;
 
-	std::unique_ptr<SavedMediaData> _savedLocalEditMediaData;
 	std::unique_ptr<Data::Media> _media;
 	std::unique_ptr<Data::MessageReactions> _reactions;
 	crl::time _reactionsLastRefreshed = 0;
@@ -601,6 +671,7 @@ private:
 
 	TimeId _date = 0;
 	TimeId _ttlDestroyAt = 0;
+	int _boostsApplied = 0;
 
 	HistoryView::Element *_mainView = nullptr;
 	MessageGroupId _groupId = MessageGroupId();
@@ -611,3 +682,5 @@ private:
 	friend class HistoryView::ServiceMessagePainter;
 
 };
+
+constexpr auto kSize = int(sizeof(HistoryItem));

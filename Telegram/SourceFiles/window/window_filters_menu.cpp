@@ -27,17 +27,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/confirm_box.h"
 #include "boxes/filters/edit_filter_box.h"
 #include "boxes/premium_limits_box.h"
-#include "settings/settings_common.h"
 #include "settings/settings_folders.h"
 #include "storage/storage_media_prepare.h"
 #include "api/api_chat_filters.h"
 #include "apiwrap.h"
 #include "styles/style_widgets.h"
 #include "styles/style_window.h"
+#include "styles/style_layers.h" // attentionBoxButton
 #include "styles/style_menu_icons.h"
 
 namespace Window {
 namespace {
+
+[[nodiscard]] Dialogs::UnreadState MainListMapUnreadState(
+		not_null<Main::Session*> session,
+		const Dialogs::UnreadState &state) {
+	const auto folderId = Data::Folder::kId;
+	if (const auto folder = session->data().folderLoaded(folderId)) {
+		return state - folder->chatsList()->unreadState();
+	}
+	return state;
+}
 
 [[nodiscard]] rpl::producer<Dialogs::UnreadState> MainListUnreadState(
 		not_null<Dialogs::MainList*> list) {
@@ -58,11 +68,7 @@ namespace {
 	return MainListUnreadState(
 		session->data().chatsList()
 	) | rpl::map([=](const Dialogs::UnreadState &state) {
-		const auto folderId = Data::Folder::kId;
-		if (const auto folder = session->data().folderLoaded(folderId)) {
-			return state - folder->chatsList()->unreadState();
-		}
-		return state;
+		return MainListMapUnreadState(session, state);
 	});
 }
 
@@ -194,12 +200,6 @@ void FiltersMenu::refresh() {
 	if (!filters->has() || _ignoreRefresh) {
 		return;
 	}
-	if (GetEnhancedBool("hide_all_chats")) {
-		filters->backupFilters();
-		filters->remove(0);
-	} else if (filters->hasBackup()) {
-		filters->restoreFilters();
-	}
 	const auto oldTop = _scroll.scrollTop();
 	const auto reorderAll = premium();
 	if (!_list) {
@@ -211,7 +211,7 @@ void FiltersMenu::refresh() {
 	const auto maxLimit = (reorderAll ? 1 : 0)
 		+ Data::PremiumLimits(&_session->session()).dialogFiltersCurrent();
 	const auto premiumFrom = (reorderAll ? 0 : 1) + maxLimit;
-	if (!reorderAll) {
+	if (!reorderAll && !GetEnhancedBool("hide_all_chats")) {
 		_reorder->addPinnedInterval(0, 1);
 	}
 	_reorder->addPinnedInterval(
@@ -241,11 +241,11 @@ void FiltersMenu::refresh() {
 	// After the filters are refreshed, the scroll is reset,
 	// so we have to restore it.
 	_scroll.scrollToY(oldTop);
-	const auto i = _filters.find(GetEnhancedBool("hide_all_chats") ? filters->lookupId(0) : _activeFilterId);
-	const auto button = ((i != end(_filters)) ? i->second.get() : nullptr);
-	if (button) {
-		scrollToButton(button);
-		_session->setActiveChatsFilter(GetEnhancedBool("hide_all_chats") ? filters->lookupId(0) : _activeFilterId);
+
+	// Fix active chat folder when hide all chats is enabled.
+	if (GetEnhancedBool("hide_all_chats")) {
+		const auto lookup_id = filters->lookupId(premium() ? 0 : 1);
+		_session->setActiveChatsFilter(lookup_id);
 	}
 }
 
@@ -331,24 +331,17 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 		if (_reordering) {
 			return;
 		} else if (raw->locked()) {
-			_session->show(Box(FiltersLimitBox, &_session->session()));
+			_session->show(Box(
+				FiltersLimitBox,
+				&_session->session(),
+				std::nullopt));
 		} else if (id >= 0) {
 			_session->setActiveChatsFilter(id);
 		} else {
 			if (GetEnhancedBool("replace_edit_button")) {
 				_session->showPeerHistory(_session->session().userPeerId());
 			} else {
-				const auto filters = &_session->session().data().chatsFilters();
-				if (filters->suggestedLoaded()) {
-					_session->showSettings(Settings::Folders::Id());
-				} else if (!_waitingSuggested) {
-					_waitingSuggested = true;
-					filters->requestSuggested();
-					filters->suggestedUpdated(
-					) | rpl::take(1) | rpl::start_with_next([=] {
-						_session->showSettings(Settings::Folders::Id());
-					}, _outer.lifetime());
-				}
+				openFiltersSettings();
 			}
 		}
 	});
@@ -356,7 +349,7 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 		raw->setAcceptDrops(true);
 		raw->events(
 		) | rpl::filter([=](not_null<QEvent*> e) {
-			return ((e->type() == QEvent::ContextMenu) && (id > 0))
+			return ((e->type() == QEvent::ContextMenu) && (id >= 0))
 				|| e->type() == QEvent::DragEnter
 				|| e->type() == QEvent::DragMove
 				|| e->type() == QEvent::DragLeave;
@@ -409,13 +402,27 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 	return button;
 }
 
+void FiltersMenu::openFiltersSettings() {
+	const auto filters = &_session->session().data().chatsFilters();
+	if (filters->suggestedLoaded()) {
+		_session->showSettings(Settings::Folders::Id());
+	} else if (!_waitingSuggested) {
+		_waitingSuggested = true;
+		filters->requestSuggested();
+		filters->suggestedUpdated(
+		) | rpl::take(1) | rpl::start_with_next([=] {
+			_session->showSettings(Settings::Folders::Id());
+		}, _outer.lifetime());
+	}
+}
+
 void FiltersMenu::showMenu(QPoint position, FilterId id) {
 	if (_popupMenu) {
 		_popupMenu = nullptr;
 		return;
 	}
 	const auto i = _filters.find(id);
-	if (i == end(_filters)) {
+	if ((i == end(_filters)) && id) {
 		return;
 	}
 	_popupMenu = base::make_unique_q<Ui::PopupMenu>(
@@ -429,23 +436,46 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 			args.icon);
 	});
 
-	addAction(
-		tr::lng_filters_context_edit(tr::now),
-		[=] { showEditBox(id); },
-		&st::menuIconEdit);
+	if (id) {
+		addAction(
+			tr::lng_filters_context_edit(tr::now),
+			[=] { showEditBox(id); },
+			&st::menuIconEdit);
 
-	auto filteredChats = [=] {
-		return _session->session().data().chatsFilters().chatsList(id);
-	};
-	Window::MenuAddMarkAsReadChatListAction(
-		_session,
-		std::move(filteredChats),
-		addAction);
+		auto filteredChats = [=] {
+			return _session->session().data().chatsFilters().chatsList(id);
+		};
+		Window::MenuAddMarkAsReadChatListAction(
+			_session,
+			std::move(filteredChats),
+			addAction);
 
-	addAction(
-		tr::lng_filters_context_remove(tr::now),
-		[=] { showRemoveBox(id); },
-		&st::menuIconDelete);
+		addAction(
+			tr::lng_filters_context_remove(tr::now),
+			[=] { showRemoveBox(id); },
+			&st::menuIconDelete);
+	} else {
+		auto customUnreadState = [=] {
+			const auto session = &_session->session();
+			return MainListMapUnreadState(
+				session,
+				session->data().chatsList()->unreadState());
+		};
+		Window::MenuAddMarkAsReadChatListAction(
+			_session,
+			[=] { return _session->session().data().chatsList(); },
+			addAction,
+			std::move(customUnreadState));
+
+		addAction(
+			tr::lng_filters_setup_menu(tr::now),
+			[=] { openFiltersSettings(); },
+			&st::menuIconEdit);
+	}
+	if (_popupMenu->empty()) {
+		_popupMenu = nullptr;
+		return;
+	}
 	_popupMenu->popup(position);
 }
 
@@ -454,23 +484,98 @@ void FiltersMenu::showEditBox(FilterId id) {
 }
 
 void FiltersMenu::showRemoveBox(FilterId id) {
-	_session->window().show(Ui::MakeConfirmBox({
-		.text = tr::lng_filters_remove_sure(),
-		.confirmed = [=](Fn<void()> &&close) { close(); remove(id); },
-		.confirmText = tr::lng_filters_remove_yes(),
-	}));
+	const auto session = &_session->session();
+	const auto &list = session->data().chatsFilters().list();
+	const auto i = ranges::find(list, id, &Data::ChatFilter::id);
+	const auto filter = (i != end(list)) ? *i : Data::ChatFilter();
+	const auto has = filter.hasMyLinks();
+	const auto confirm = [=](Fn<void()> action, bool onlyWhenHas = false) {
+		if (!has && onlyWhenHas) {
+			action();
+			return;
+		}
+		_session->window().show(Ui::MakeConfirmBox({
+			.text = (has
+				? tr::lng_filters_delete_sure()
+				: tr::lng_filters_remove_sure()),
+			.confirmed = [=](Fn<void()> &&close) { close(); action(); },
+			.confirmText = (has
+				? tr::lng_box_delete()
+				: tr::lng_filters_remove_yes()),
+			.confirmStyle = &st::attentionBoxButton,
+		}));
+	};
+	const auto simple = [=] {
+		confirm([=] { remove(id); });
+	};
+	const auto suggestRemoving = Api::ExtractSuggestRemoving(filter);
+	if (suggestRemoving.empty()) {
+		simple();
+		return;
+	} else if (_removingRequestId) {
+		if (_removingId == id) {
+			return;
+		}
+		session->api().request(_removingRequestId).cancel();
+	}
+	_removingId = id;
+	_removingRequestId = session->api().request(
+		MTPchatlists_GetLeaveChatlistSuggestions(
+			MTP_inputChatlistDialogFilter(
+				MTP_int(id)))
+	).done(crl::guard(&_outer, [=](const MTPVector<MTPPeer> &result) {
+		_removingRequestId = 0;
+		const auto suggestRemovePeers = ranges::views::all(
+			result.v
+		) | ranges::views::transform([=](const MTPPeer &peer) {
+			return session->data().peer(peerFromMTP(peer));
+		}) | ranges::to_vector;
+		const auto chosen = crl::guard(&_outer, [=](
+				std::vector<not_null<PeerData*>> peers) {
+			remove(id, std::move(peers));
+		});
+		confirm(crl::guard(&_outer, [=] {
+			Api::ProcessFilterRemove(
+				_session,
+				filter.title(),
+				filter.iconEmoji(),
+				suggestRemoving,
+				suggestRemovePeers,
+				chosen);
+		}), true);
+	})).fail(crl::guard(&_outer, [=] {
+		_removingRequestId = 0;
+		simple();
+	})).send();
 }
 
-void FiltersMenu::remove(FilterId id) {
-	_session->session().data().chatsFilters().apply(MTP_updateDialogFilter(
+void FiltersMenu::remove(
+		FilterId id,
+		std::vector<not_null<PeerData*>> leave) {
+	const auto session = &_session->session();
+	const auto api = &session->api();
+	session->data().chatsFilters().apply(MTP_updateDialogFilter(
 		MTP_flags(MTPDupdateDialogFilter::Flag(0)),
 		MTP_int(id),
 		MTPDialogFilter()));
-	_session->session().api().request(MTPmessages_UpdateDialogFilter(
-		MTP_flags(MTPmessages_UpdateDialogFilter::Flag(0)),
-		MTP_int(id),
-		MTPDialogFilter()
-	)).send();
+	if (leave.empty()) {
+		api->request(MTPmessages_UpdateDialogFilter(
+			MTP_flags(MTPmessages_UpdateDialogFilter::Flag(0)),
+			MTP_int(id),
+			MTPDialogFilter()
+		)).send();
+	} else {
+		api->request(MTPchatlists_LeaveChatlist(
+			MTP_inputChatlistDialogFilter(MTP_int(id)),
+			MTP_vector<MTPInputPeer>(ranges::views::all(
+				leave
+			) | ranges::views::transform([](not_null<PeerData*> peer) {
+				return MTPInputPeer(peer->input);
+			}) | ranges::to<QVector<MTPInputPeer>>())
+		)).done([=](const MTPUpdates &result) {
+			api->applyUpdates(result);
+		}).send();
+	}
 }
 
 void FiltersMenu::applyReorder(
@@ -483,11 +588,11 @@ void FiltersMenu::applyReorder(
 
 	const auto filters = &_session->session().data().chatsFilters();
 	const auto &list = filters->list();
-	if (!premium()) {
-		if (list[0].id() != FilterId()) {
-			filters->moveAllToFront();
-		}
-	}
+	//if (!premium()) {
+	//	if (list[0].id() != FilterId()) {
+	//		filters->moveAllToFront();
+	//	}
+	//}
 	Assert(oldPosition >= 0 && oldPosition < list.size());
 	Assert(newPosition >= 0 && newPosition < list.size());
 	const auto id = list[oldPosition].id();

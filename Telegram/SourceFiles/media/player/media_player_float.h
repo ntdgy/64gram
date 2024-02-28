@@ -8,7 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/rp_widget.h"
-#include "ui/rect_part.h"
 #include "ui/effects/animations.h"
 #include "base/object_ptr.h"
 
@@ -130,6 +129,7 @@ public:
 class FloatDelegate {
 public:
 	virtual not_null<Ui::RpWidget*> floatPlayerWidget() = 0;
+	virtual void floatPlayerToggleGifsPaused(bool paused) = 0;
 	virtual not_null<FloatSectionDelegate*> floatPlayerGetSection(
 		Window::Column column) = 0;
 	virtual void floatPlayerEnumerateSections(Fn<void(

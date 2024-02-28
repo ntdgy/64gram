@@ -8,10 +8,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/flags.h"
+#include "data/data_chat_participant_status.h"
 
 namespace Data {
 class Session;
 } // namespace Data
+
+namespace InlineBots {
+enum class PeerType : uint8;
+using PeerTypes = base::flags<PeerType>;
+} // namespace InlineBots
 
 enum class ReplyMarkupFlag : uint32 {
 	None                  = (1U << 0),
@@ -28,6 +34,31 @@ enum class ReplyMarkupFlag : uint32 {
 inline constexpr bool is_flag_type(ReplyMarkupFlag) { return true; }
 using ReplyMarkupFlags = base::flags<ReplyMarkupFlag>;
 
+struct RequestPeerQuery {
+	enum class Type : uchar {
+		User,
+		Group,
+		Broadcast,
+	};
+	enum class Restriction : uchar {
+		Any,
+		Yes,
+		No,
+	};
+
+	int maxQuantity = 0;
+	Type type = Type::User;
+	Restriction userIsBot = Restriction::Any;
+	Restriction userIsPremium = Restriction::Any;
+	Restriction groupIsForum = Restriction::Any;
+	Restriction hasUsername = Restriction::Any;
+	bool amCreator = false;
+	bool isBotParticipant = false;
+	ChatAdminRights myRights = {};
+	ChatAdminRights botRights = {};
+};
+static_assert(std::is_trivially_copy_assignable_v<RequestPeerQuery>);
+
 struct HistoryMessageMarkupButton {
 	enum class Type {
 		Default,
@@ -37,6 +68,7 @@ struct HistoryMessageMarkupButton {
 		RequestPhone,
 		RequestLocation,
 		RequestPoll,
+		RequestPeer,
 		SwitchInline,
 		SwitchInlineSame,
 		Game,
@@ -64,6 +96,7 @@ struct HistoryMessageMarkupButton {
 	QString text, forwardText;
 	QByteArray data;
 	int64 buttonId = 0;
+	InlineBots::PeerTypes peerTypes = 0;
 	mutable mtpRequestId requestId = 0;
 
 };

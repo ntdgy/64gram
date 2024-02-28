@@ -25,12 +25,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "data/data_media_types.h"
 #include "data/data_file_origin.h"
-#include "window/window_session_controller.h"
-#include "window/window_controller.h"
 #include "core/shortcuts.h"
 #include "core/application.h"
-#include "main/main_domain.h" // Domain::activeSessionValue.
+#include "core/core_settings.h"
+#include "window/window_controller.h"
 #include "mainwindow.h"
+#include "main/main_domain.h" // Domain::activeSessionValue.
 #include "main/main_session.h"
 #include "main/main_account.h" // session->account().sessionChanges().
 #include "main/main_session_settings.h"
@@ -51,10 +51,6 @@ constexpr auto kShufflePlaylistLimit = 10'000;
 constexpr auto kRememberShuffledOrderItems = 16;
 
 constexpr auto kMinLengthForSavePosition = 20 * TimeId(60); // 20 minutes.
-
-auto VoicePlaybackSpeed() {
-	return std::clamp(Core::App().settings().voicePlaybackSpeed(), 0.6, 1.7);
-}
 
 base::options::toggle OptionDisableAutoplayNext({
 	.id = kOptionDisableAutoplayNext,
@@ -308,12 +304,7 @@ void Instance::clearStreamed(not_null<Data*> data, bool savePosition) {
 	data->streamed = nullptr;
 
 	_roundPlaying = false;
-	if (const auto window = Core::App().primaryWindow()) {
-		if (const auto controller = window->sessionController()) {
-			controller->disableGifPauseReason(
-				Window::GifPauseReason::RoundPlaying);
-		}
-	}
+	Core::App().floatPlayerToggleGifsPaused(false);
 }
 
 void Instance::refreshPlaylist(not_null<Data*> data) {
@@ -512,6 +503,9 @@ bool Instance::moveInPlaylist(
 	}
 	const auto jumpByItem = [&](not_null<HistoryItem*> item) {
 		if (const auto media = item->media()) {
+			if (media->ttlSeconds()) {
+				return false;
+			}
 			if (const auto document = media->document()) {
 				if (autonext) {
 					_switchToNext.fire({
@@ -764,6 +758,7 @@ auto Media::Player::Instance::seekingChanges(AudioMsgId::Type type) const
 
 not_null<Instance*> instance() {
 	Expects(SingleInstance != nullptr);
+
 	return SingleInstance;
 }
 
@@ -848,7 +843,7 @@ Streaming::PlaybackOptions Instance::streamingOptions(
 		? Streaming::Mode::Both
 		: Streaming::Mode::Audio;
 	result.speed = audioId.changeablePlaybackSpeed()
-		? VoicePlaybackSpeed()
+		? Core::App().settings().voicePlaybackSpeed()
 		: 1.;
 	result.audioId = audioId;
 	if (position >= 0) {
@@ -1144,7 +1139,8 @@ void Instance::updateVoicePlaybackSpeed() {
 			return;
 		}
 		if (const auto streamed = data->streamed.get()) {
-			streamed->instance.setSpeed(VoicePlaybackSpeed());
+			streamed->instance.setSpeed(
+				Core::App().settings().voicePlaybackSpeed());
 		}
 	}
 }
@@ -1275,8 +1271,13 @@ void Instance::setupShortcuts() {
 	}, _lifetime);
 }
 
-bool Instance::pauseGifByRoundVideo() const {
-	return _roundPlaying;
+void Instance::stopAndClose() {
+	_closePlayerRequests.fire({});
+
+	stop(AudioMsgId::Type::Voice);
+	stop(AudioMsgId::Type::Song);
+
+	Shortcuts::ToggleMediaShortcuts(false);
 }
 
 void Instance::handleStreamingUpdate(
@@ -1292,12 +1293,7 @@ void Instance::handleStreamingUpdate(
 				requestRoundVideoRepaint();
 			});
 			_roundPlaying = true;
-			if (const auto window = Core::App().primaryWindow()) {
-				if (const auto controller = window->sessionController()) {
-					controller->enableGifPauseReason(
-						Window::GifPauseReason::RoundPlaying);
-				}
-			}
+			Core::App().floatPlayerToggleGifsPaused(true);
 			requestRoundVideoResize();
 		}
 		emitUpdate(data->type);

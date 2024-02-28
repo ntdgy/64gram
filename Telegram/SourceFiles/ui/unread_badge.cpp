@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "lang/lang_keys.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "ui/unread_badge_paint.h"
 #include "styles/style_dialogs.h"
 
@@ -23,6 +24,12 @@ namespace {
 constexpr auto kPlayStatusLimit = 2;
 
 } // namespace
+
+struct PeerBadge::EmojiStatus {
+	DocumentId id = 0;
+	std::unique_ptr<Ui::Text::CustomEmoji> emoji;
+	int skip = 0;
+};
 
 void UnreadBadge::setText(const QString &text, bool active) {
 	_text = text;
@@ -125,7 +132,7 @@ int PeerBadge::drawGetWidth(
 	Expects(descriptor.customEmojiRepaint != nullptr);
 
 	const auto peer = descriptor.peer;
-	if ((peer->isScam() || peer->isFake()) && descriptor.scam) {
+	if (descriptor.scam && (peer->isScam() || peer->isFake())) {
 		const auto phrase = peer->isScam()
 			? tr::lng_scam_badge(tr::now)
 			: tr::lng_fake_badge(tr::now);
@@ -152,27 +159,15 @@ int PeerBadge::drawGetWidth(
 			phrase,
 			phraseWidth);
 		return st::dialogsScamSkip + width;
-	} else if (peer->isVerified() && descriptor.verified) {
-		const auto iconw = descriptor.verified->width();
-		descriptor.verified->paint(
-			p,
-			rectForName.x() + qMin(nameWidth, rectForName.width() - iconw),
-			rectForName.y(),
-			outerWidth);
-		return iconw;
-	} else if (peer->isPremium()
-		&& descriptor.premium
+	} else if (descriptor.premium
+		&& peer->emojiStatusId()
+		&& (peer->isPremium() || peer->isChannel())
 		&& peer->session().premiumBadgesShown()) {
-		const auto id = peer->isUser() ? peer->asUser()->emojiStatusId() : 0;
+		const auto id = peer->emojiStatusId();
 		const auto iconw = descriptor.premium->width();
 		const auto iconx = rectForName.x()
 			+ qMin(nameWidth, rectForName.width() - iconw);
 		const auto icony = rectForName.y();
-		if (!id) {
-			_emojiStatus = nullptr;
-			descriptor.premium->paint(p, iconx, icony, outerWidth);
-			return iconw;
-		}
 		if (!_emojiStatus) {
 			_emojiStatus = std::make_unique<EmojiStatus>();
 			const auto size = st::emojiSize;
@@ -195,9 +190,27 @@ int PeerBadge::drawGetWidth(
 			.position = QPoint(
 				iconx - 2 * _emojiStatus->skip,
 				icony + _emojiStatus->skip),
-			.paused = descriptor.paused,
+			.paused = descriptor.paused || On(PowerSaving::kEmojiStatus),
 		});
 		return iconw - 4 * _emojiStatus->skip;
+	} else if (descriptor.verified && peer->isVerified()) {
+		const auto iconw = descriptor.verified->width();
+		descriptor.verified->paint(
+			p,
+			rectForName.x() + qMin(nameWidth, rectForName.width() - iconw),
+			rectForName.y(),
+			outerWidth);
+		return iconw;
+	} else if (descriptor.premium
+		&& peer->isPremium()
+		&& peer->session().premiumBadgesShown()) {
+		const auto iconw = descriptor.premium->width();
+		const auto iconx = rectForName.x()
+			+ qMin(nameWidth, rectForName.width() - iconw);
+		const auto icony = rectForName.y();
+		_emojiStatus = nullptr;
+		descriptor.premium->paint(p, iconx, icony, outerWidth);
+		return iconw;
 	}
 	return 0;
 }

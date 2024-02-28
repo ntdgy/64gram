@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_file_origin.h"
 #include "data/data_photo_media.h"
 #include "data/data_document_media.h"
+#include "history/history.h"
 #include "history/history_item_reply_markup.h"
 #include "inline_bots/inline_bot_layout_item.h"
 #include "inline_bots/inline_bot_send_data.h"
@@ -26,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/image/image_location_factory.h"
 #include "mainwidget.h"
 #include "main/main_session.h"
+#include "styles/style_chat_helpers.h"
 
 namespace InlineBots {
 namespace {
@@ -261,6 +263,12 @@ std::unique_ptr<Result> Result::Create(
 		result->sendData = std::make_unique<internal::SendInvoice>(
 			session,
 			media);
+	}, [&](const MTPDbotInlineMessageMediaWebPage &data) {
+		result->sendData = std::make_unique<internal::SendText>(
+			session,
+			qs(data.vmessage()),
+			Api::EntitiesFromMTP(session, data.ventities().value_or_empty()),
+			false);
 	});
 
 	if (!result->sendData || !result->sendData->isValid()) {
@@ -367,13 +375,13 @@ bool Result::hasThumbDisplay() const {
 };
 
 void Result::addToHistory(
-		History *history,
+		not_null<History*> history,
 		MessageFlags flags,
 		MsgId msgId,
 		PeerId fromId,
 		TimeId date,
 		UserId viaBotId,
-		MsgId replyToId,
+		FullReplyTo replyTo,
 		const QString &postAuthor) const {
 	flags |= MessageFlag::FromInlineBot;
 
@@ -389,13 +397,18 @@ void Result::addToHistory(
 		fromId,
 		date,
 		viaBotId,
-		replyToId,
+		replyTo,
 		postAuthor,
 		std::move(markup));
 }
 
-QString Result::getErrorOnSend(History *history) const {
-	return sendData->getErrorOnSend(this, history);
+QString Result::getErrorOnSend(not_null<History*> history) const {
+	const auto specific = sendData->getErrorOnSend(this, history);
+	return !specific.isEmpty()
+		? specific
+		: Data::RestrictionError(
+			history->peer,
+			ChatRestriction::SendInline).value_or(QString());
 }
 
 std::optional<Data::LocationPoint> Result::getLocationPoint() const {

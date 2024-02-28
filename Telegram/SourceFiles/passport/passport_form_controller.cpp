@@ -315,14 +315,12 @@ FormRequest::FormRequest(
 	const QString &scope,
 	const QString &callbackUrl,
 	const QString &publicKey,
-	const QString &nonce,
-	const QString &errors)
+	const QString &nonce)
 : botId(botId)
 , scope(scope)
 , callbackUrl(ValidateUrl(callbackUrl))
 , publicKey(publicKey)
-, nonce(nonce)
-, errors(errors) {
+, nonce(nonce) {
 }
 
 EditFile::EditFile(
@@ -1586,7 +1584,7 @@ void FormController::uploadEncryptedFile(
 	auto prepared = std::make_shared<FileLoadResult>(
 		TaskId(),
 		file.uploadData->fileId,
-		FileLoadTo(PeerId(), Api::SendOptions(), MsgId(), MsgId(), MsgId()),
+		FileLoadTo(PeerId(), Api::SendOptions(), FullReplyTo(), MsgId()),
 		TextWithTags(),
 		false,
 		std::shared_ptr<SendingAlbum>(nullptr));
@@ -1793,7 +1791,7 @@ void FormController::loadFile(File &file) {
 		return;
 	}
 	file.downloadStatus.set(LoadStatus::Status::InProgress, 0);
-	const auto [j, ok] = _fileLoaders.emplace(
+	const auto &[j, ok] = _fileLoaders.emplace(
 		key,
 		std::make_unique<mtpFileLoader>(
 			&_controller->session(),
@@ -1816,7 +1814,7 @@ void FormController::loadFile(File &file) {
 	loader->updates(
 	) | rpl::start_with_next_error_done([=] {
 		fileLoadProgress(key, loader->currentOffset());
-	}, [=](bool started) {
+	}, [=](FileLoader::Error error) {
 		fileLoadFail(key);
 	}, [=] {
 		fileLoadDone(key, loader->bytes());
@@ -1825,7 +1823,7 @@ void FormController::loadFile(File &file) {
 }
 
 void FormController::fileLoadDone(FileKey key, const QByteArray &bytes) {
-	if (const auto [value, file] = findFile(key); file != nullptr) {
+	if (const auto &[value, file] = findFile(key); file != nullptr) {
 		const auto decrypted = DecryptData(
 			bytes::make_span(bytes),
 			file->hash,
@@ -1845,7 +1843,7 @@ void FormController::fileLoadDone(FileKey key, const QByteArray &bytes) {
 }
 
 void FormController::fileLoadProgress(FileKey key, int offset) {
-	if (const auto [value, file] = findFile(key); file != nullptr) {
+	if (const auto &[value, file] = findFile(key); file != nullptr) {
 		file->downloadStatus.set(LoadStatus::Status::InProgress, offset);
 		if (const auto fileInEdit = findEditFile(key)) {
 			fileInEdit->fields.downloadStatus = file->downloadStatus;
@@ -1855,7 +1853,7 @@ void FormController::fileLoadProgress(FileKey key, int offset) {
 }
 
 void FormController::fileLoadFail(FileKey key) {
-	if (const auto [value, file] = findFile(key); file != nullptr) {
+	if (const auto &[value, file] = findFile(key); file != nullptr) {
 		file->downloadStatus.set(LoadStatus::Status::Failed);
 		if (const auto fileInEdit = findEditFile(key)) {
 			fileInEdit->fields.downloadStatus = file->downloadStatus;
@@ -2167,7 +2165,11 @@ QString FormController::getPlainTextFromValue(
 void FormController::startPhoneVerification(not_null<Value*> value) {
 	value->verification.requestId = _api.request(MTPaccount_SendVerifyPhoneCode(
 		MTP_string(getPhoneFromValue(value)),
-		MTP_codeSettings(MTP_flags(0), MTP_vector<MTPbytes>())
+		MTP_codeSettings(
+			MTP_flags(0),
+			MTPVector<MTPbytes>(),
+			MTPstring(),
+			MTPBool())
 	)).done([=](const MTPauth_SentCode &result) {
 		result.match([&](const MTPDauth_sentCode &data) {
 			const auto next = data.vnext_type();
@@ -2215,12 +2217,17 @@ void FormController::startPhoneVerification(not_null<Value*> value) {
 				bad("FlashCall");
 			}, [&](const MTPDauth_sentCodeTypeMissedCall &) {
 				bad("MissedCall");
+			}, [&](const MTPDauth_sentCodeTypeFirebaseSms &) {
+				bad("FirebaseSms");
 			}, [&](const MTPDauth_sentCodeTypeEmailCode &) {
 				bad("EmailCode");
 			}, [&](const MTPDauth_sentCodeTypeSetUpEmailRequired &) {
 				bad("SetUpEmailRequired");
 			});
 			_verificationNeeded.fire_copy(value);
+		}, [](const MTPDauth_sentCodeSuccess &) {
+			LOG(("API Error: Unexpected auth.sentCodeSuccess "
+				"(FormController::startPhoneVerification)."));
 		});
 	}).fail([=](const MTP::Error &error) {
 		value->verification.requestId = 0;
@@ -2256,7 +2263,7 @@ void FormController::requestPhoneCall(not_null<Value*> value) {
 	_api.request(MTPauth_ResendCode(
 		MTP_string(getPhoneFromValue(value)),
 		MTP_string(value->verification.phoneCodeHash)
-	)).done([=](const MTPauth_SentCode &code) {
+	)).done([=] {
 		value->verification.call->callDone();
 	}).send();
 }
@@ -2584,7 +2591,7 @@ bool FormController::parseForm(const MTPaccount_AuthorizationForm &result) {
 		const auto row = CollectRequestedRow(required);
 		for (const auto &requested : row.values) {
 			const auto type = requested.type;
-			const auto [i, ok] = _form.values.emplace(type, Value(type));
+			const auto &[i, ok] = _form.values.emplace(type, Value(type));
 			auto &value = i->second;
 			value.translationRequired = requested.translationRequired;
 			value.selfieRequired = requested.selfieRequired;

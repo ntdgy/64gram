@@ -21,11 +21,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "core/ui_integration.h"
 #include "lang/lang_keys.h"
 #include "window/window_peer_menu.h"
 #include "window/window_session_controller.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
+
+#include "apiwrap.h"
+#include "boxes/peer_list_controllers.h"
+#include "data/data_changes.h"
+#include "settings/settings_common.h"
+#include "ui/widgets/buttons.h"
+#include "styles/style_menu_icons.h"
+#include "styles/style_settings.h"
 
 namespace HistoryView::Controls {
 namespace {
@@ -33,6 +43,19 @@ namespace {
 constexpr auto kUnknownVersion = -1;
 constexpr auto kNameWithCaptionsVersion = -2;
 constexpr auto kNameNoCaptionsVersion = -3;
+
+[[nodiscard]] bool HasOnlyForcedForwardedInfo(const HistoryItemsList &list) {
+	for (const auto &item : list) {
+		if (const auto media = item->media()) {
+			if (!media->forceForwardedInfo()) {
+				return false;
+			}
+		} else {
+			return false;
+		}
+	}
+	return true;
+}
 
 } // namespace
 
@@ -90,9 +113,9 @@ void ForwardPanel::checkTexts() {
 		: kNameNoCaptionsVersion;
 	if (keepNames) {
 		for (const auto item : _data.items) {
-			if (const auto from = item->senderOriginal()) {
+			if (const auto from = item->originalSender()) {
 				version += from->nameVersion();
-			} else if (const auto info = item->hiddenSenderInfo()) {
+			} else if (const auto info = item->originalHiddenSenderInfo()) {
 				++version;
 			} else {
 				Unexpected("Corrupt forwarded information in message.");
@@ -127,13 +150,13 @@ void ForwardPanel::updateTexts() {
 		auto names = std::vector<QString>();
 		names.reserve(_data.items.size());
 		for (const auto item : _data.items) {
-			if (const auto from = item->senderOriginal()) {
+			if (const auto from = item->originalSender()) {
 				if (!insertedPeers.contains(from)) {
 					insertedPeers.emplace(from);
 					names.push_back(from->shortName());
 					fullname = from->name();
 				}
-			} else if (const auto info = item->hiddenSenderInfo()) {
+			} else if (const auto info = item->originalHiddenSenderInfo()) {
 				if (!insertedNames.contains(info->name)) {
 					insertedNames.emplace(info->name);
 					names.push_back(info->firstName);
@@ -169,16 +192,13 @@ void ForwardPanel::updateTexts() {
 				.hideSender = true,
 				.hideCaption = !keepCaptions,
 				.generateImages = false,
+				.ignoreGroup = true,
 			}).text;
-			const auto history = item->history();
-			const auto dropCustomEmoji = !history->session().premium()
-				&& !_to->peer()->isSelf()
-				&& (item->computeDropForwardedInfo() || !keepNames);
-			if (dropCustomEmoji) {
-				text = DropCustomEmoji(std::move(text));
+			if (item->computeDropForwardedInfo() || !keepNames) {
+				text = DropDisallowedCustomEmoji(_to->peer(), std::move(text));
 			}
 		} else {
-			text = Ui::Text::PlainLink(
+			text = Ui::Text::Colorized(
 				tr::lng_forward_messages(tr::now, lt_count, count));
 		}
 	}
@@ -188,7 +208,7 @@ void ForwardPanel::updateTexts() {
 		.customEmojiRepaint = _repaint,
 	};
 	_text.setMarkedText(
-		st::messageTextStyle,
+		st::defaultTextStyle,
 		text,
 		Ui::DialogTextOptions(),
 		context);
@@ -216,38 +236,15 @@ bool ForwardPanel::empty() const {
 	return _data.items.empty();
 }
 
-void ForwardPanel::editOptions(
-		not_null<Window::SessionController*> controller) {
+void ForwardPanel::editOptions(std::shared_ptr<ChatHelpers::Show> show) {
 	using Options = Data::ForwardOptions;
 	const auto now = _data.options;
 	const auto count = _data.items.size();
 	const auto dropNames = (now != Options::PreserveInfo);
-	const auto hasCaptions = [&] {
-		for (const auto item : _data.items) {
-			if (const auto media = item->media()) {
-				if (!item->originalText().text.isEmpty()
-					&& media->allowsEditCaption()) {
-					return true;
-				}
-			}
-		}
-		return false;
-	}();
-	const auto hasOnlyForcedForwardedInfo = [&] {
-		if (hasCaptions) {
-			return false;
-		}
-		for (const auto item : _data.items) {
-			if (const auto media = item->media()) {
-				if (!media->forceForwardedInfo()) {
-					return false;
-				}
-			} else {
-				return false;
-			}
-		}
-		return true;
-	}();
+	const auto sendersCount = ItemsForwardSendersCount(_data.items);
+	const auto captionsCount = ItemsForwardCaptionsCount(_data.items);
+	const auto hasOnlyForcedForwardedInfo = !captionsCount
+		&& HasOnlyForcedForwardedInfo(_data.items);
 	const auto dropCaptions = (now == Options::NoNamesAndCaptions);
 	const auto weak = base::make_weak(this);
 	const auto changeRecipient = crl::guard(this, [=] {
@@ -256,7 +253,10 @@ void ForwardPanel::editOptions(
 		}
 		auto data = base::take(_data);
 		_to->owningHistory()->setForwardDraft(_to->topicRootId(), {});
-		Window::ShowForwardMessagesBox(controller, _to->owner().itemsToIds(data.items));
+		Window::ShowForwardMessagesBox(show, {
+			.ids = _to->owner().itemsToIds(data.items),
+			.options = data.options,
+		});
 	});
 	if (hasOnlyForcedForwardedInfo) {
 		changeRecipient();
@@ -267,7 +267,7 @@ void ForwardPanel::editOptions(
 		if (_data.items.empty()) {
 			return;
 		}
-		const auto newOptions = (options.hasCaptions
+		const auto newOptions = (options.captionsCount
 			&& options.dropCaptions)
 			? Options::NoNamesAndCaptions
 			: options.dropNames
@@ -282,16 +282,40 @@ void ForwardPanel::editOptions(
 			_repaint();
 		}
 	});
-	controller->show(Box(
+	show->showBox(Box(
 		Ui::ForwardOptionsBox,
 		count,
 		Ui::ForwardOptions{
+			.sendersCount = sendersCount,
+			.captionsCount = captionsCount,
 			.dropNames = dropNames,
-			.hasCaptions = hasCaptions,
 			.dropCaptions = dropCaptions,
 		},
 		optionsChanged,
 		changeRecipient));
+}
+
+void ForwardPanel::editToNextOption() {
+	using Options = Data::ForwardOptions;
+	const auto captionsCount = ItemsForwardCaptionsCount(_data.items);
+	const auto hasOnlyForcedForwardedInfo = !captionsCount
+		&& HasOnlyForcedForwardedInfo(_data.items);
+	if (hasOnlyForcedForwardedInfo) {
+		return;
+	}
+
+	const auto now = _data.options;
+	const auto next = (now == Options::PreserveInfo)
+		? Options::NoSenderNames
+		: ((now == Options::NoSenderNames) && captionsCount)
+		? Options::NoNamesAndCaptions
+		: Options::PreserveInfo;
+
+	_to->owningHistory()->setForwardDraft(_to->topicRootId(), {
+		.ids = _to->owner().itemsToIds(_data.items),
+		.options = next,
+	});
+	_repaint();
 }
 
 void ForwardPanel::paint(
@@ -306,6 +330,7 @@ void ForwardPanel::paint(
 	const_cast<ForwardPanel*>(this)->checkTexts();
 	const auto now = crl::now();
 	const auto paused = p.inactive();
+	const auto pausedSpoiler = paused || On(PowerSaving::kChatSpoiler);
 	const auto firstItem = _data.items.front();
 	const auto firstMedia = firstItem->media();
 	const auto hasPreview = (_data.items.size() < 2)
@@ -321,9 +346,9 @@ void ForwardPanel::paint(
 	if (preview) {
 		auto to = QRect(
 			x,
-			y + st::msgReplyPadding.top(),
-			st::msgReplyBarSize.height(),
-			st::msgReplyBarSize.height());
+			y + (st::historyReplyHeight - st::historyReplyPreview) / 2,
+			st::historyReplyPreview,
+			st::historyReplyPreview);
 		p.drawPixmap(to.x(), to.y(), preview->pixSingle(
 			preview->size() / style::DevicePixelRatio(),
 			{
@@ -332,12 +357,9 @@ void ForwardPanel::paint(
 			}));
 		if (_spoiler) {
 			Ui::FillSpoilerRect(p, to, Ui::DefaultImageSpoiler().frame(
-				_spoiler->index(now, paused)));
+				_spoiler->index(now, pausedSpoiler)));
 		}
-		const auto skip = st::msgReplyBarSize.height()
-			+ st::msgReplyBarSkip
-			- st::msgReplyBarSize.width()
-			- st::msgReplyBarPos.x();
+		const auto skip = st::historyReplyPreview + st::msgReplyBarSkip;
 		x += skip;
 		available -= skip;
 	}
@@ -356,9 +378,114 @@ void ForwardPanel::paint(
 		.palette = &st::historyComposeAreaPalette,
 		.spoiler = Ui::Text::DefaultSpoilerCache(),
 		.now = now,
-		.paused = paused,
+		.pausedEmoji = paused || On(PowerSaving::kEmojiChat),
+		.pausedSpoiler = pausedSpoiler,
 		.elisionLines = 1,
 	});
+}
+
+void ClearDraftReplyTo(
+		not_null<History*> history,
+		MsgId topicRootId,
+		FullMsgId equalTo) {
+	const auto local = history->localDraft(topicRootId);
+	if (!local || (equalTo && local->reply.messageId != equalTo)) {
+		return;
+	}
+	auto draft = *local;
+	draft.reply = { .topicRootId = topicRootId };
+	if (Data::DraftIsNull(&draft)) {
+		history->clearLocalDraft(topicRootId);
+	} else {
+		history->setLocalDraft(
+			std::make_unique<Data::Draft>(std::move(draft)));
+	}
+	if (const auto thread = history->threadFor(topicRootId)) {
+		history->session().api().saveDraftToCloudDelayed(thread);
+	}
+}
+
+void EditWebPageOptions(
+		std::shared_ptr<ChatHelpers::Show> show,
+		not_null<WebPageData*> webpage,
+		Data::WebPageDraft draft,
+		Fn<void(Data::WebPageDraft)> done) {
+	show->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(u"Link Preview"_q));
+
+		struct State {
+			rpl::variable<Data::WebPageDraft> result;
+			Ui::SettingsButton *large = nullptr;
+			Ui::SettingsButton *small = nullptr;
+		};
+		const auto state = box->lifetime().make_state<State>(State{
+			.result = draft,
+			});
+
+		state->large = Settings::AddButtonWithIcon(
+			box->verticalLayout(),
+			rpl::single(u"Force large media"_q),
+			st::settingsButton,
+			{ &st::menuIconMakeBig });
+		state->large->setClickedCallback([=] {
+			auto copy = state->result.current();
+			copy.forceLargeMedia = true;
+			copy.forceSmallMedia = false;
+			state->result = copy;
+		});
+
+		state->small = Settings::AddButtonWithIcon(
+			box->verticalLayout(),
+			rpl::single(u"Force small media"_q),
+			st::settingsButton,
+			{ &st::menuIconMakeSmall });
+		state->small->setClickedCallback([=] {
+			auto copy = state->result.current();
+			copy.forceSmallMedia = true;
+			copy.forceLargeMedia = false;
+			state->result = copy;
+		});
+
+		state->result.value(
+		) | rpl::start_with_next([=](const Data::WebPageDraft &draft) {
+			state->large->setColorOverride(draft.forceLargeMedia
+				? st::windowActiveTextFg->c
+				: std::optional<QColor>());
+			state->small->setColorOverride(draft.forceSmallMedia
+				? st::windowActiveTextFg->c
+				: std::optional<QColor>());
+		}, box->lifetime());
+
+		Settings::AddButtonWithIcon(
+			box->verticalLayout(),
+			state->result.value(
+			) | rpl::map([=](const Data::WebPageDraft &draft) {
+				return draft.invert
+					? u"Above message"_q
+					: u"Below message"_q;
+			}),
+			st::settingsButton,
+			{ &st::menuIconChangeOrder }
+		)->setClickedCallback([=] {
+			auto copy = state->result.current();
+			copy.invert = !copy.invert;
+			state->result = copy;
+		});
+
+		box->addButton(tr::lng_settings_save(), [=] {
+			const auto weak = Ui::MakeWeak(box.get());
+			auto result = state->result.current();
+			result.manual = true;
+			done(result);
+			if (const auto strong = weak.data()) {
+				strong->closeBox();
+			}
+		});
+		box->addButton(tr::lng_cancel(), [=] {
+			box->closeBox();
+		});
+	}));
+
 }
 
 } // namespace HistoryView::Controls

@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/custom_emoji_instance.h"
 #include "ui/emoji_config.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/click_handler_types.h"
@@ -85,11 +86,7 @@ Sticker::Sticker(
 , _data(data)
 , _replacements(replacements)
 , _cachingTag(ChatHelpers::StickerLottieSize::MessageHistory)
-, _oncePlayed(false)
-, _premiumEffectPlayed(false)
-, _nextLastDiceFrame(false)
-, _skipPremiumEffect(skipPremiumEffect)
-, _giftBoxSticker(false) {
+, _skipPremiumEffect(skipPremiumEffect) {
 	if ((_dataMedia = _data->activeMediaView())) {
 		dataMediaCreated();
 	} else {
@@ -103,7 +100,14 @@ Sticker::Sticker(
 		if (_player) {
 			if (hasPremiumEffect() && !_premiumEffectPlayed) {
 				_premiumEffectPlayed = true;
-				_parent->delegate()->elementStartPremium(_parent, replacing);
+				if (On(PowerSaving::kStickersChat)
+					&& !_premiumEffectSkipped) {
+					_premiumEffectSkipped = true;
+				} else {
+					_parent->delegate()->elementStartPremium(
+						_parent,
+						replacing);
+				}
 			}
 			playerCreated();
 		}
@@ -243,6 +247,7 @@ DocumentData *Sticker::document() {
 void Sticker::stickerClearLoopPlayed() {
 	_oncePlayed = false;
 	_premiumEffectPlayed = false;
+	_premiumEffectSkipped = false;
 }
 
 void Sticker::paintAnimationFrame(
@@ -254,13 +259,17 @@ void Sticker::paintAnimationFrame(
 		: (context.selected() && !_nextLastDiceFrame)
 		? context.st->msgStickerOverlay()->c
 		: QColor(0, 0, 0, 0);
+	const auto powerSavingFlag = (isEmojiSticker() || _diceIndex >= 0)
+		? PowerSaving::kEmojiChat
+		: PowerSaving::kStickersChat;
+	const auto paused = context.paused || On(powerSavingFlag);
 	const auto frame = _player
 		? _player->frame(
 			_size,
 			colored,
 			mirrorHorizontal(),
 			context.now,
-			context.paused)
+			paused)
 		: StickerPlayer::FrameInfo();
 	if (_nextLastDiceFrame) {
 		_nextLastDiceFrame = false;
@@ -289,7 +298,7 @@ void Sticker::paintAnimationFrame(
 	const auto count = _player->framesCount();
 	_frameIndex = frame.index;
 	_framesCount = count;
-	_nextLastDiceFrame = !context.paused
+	_nextLastDiceFrame = !paused
 		&& (_diceIndex > 0)
 		&& (_frameIndex + 2 == count);
 	const auto playOnce = (_diceIndex > 0)
@@ -301,7 +310,7 @@ void Sticker::paintAnimationFrame(
 	const auto lastDiceFrame = (_diceIndex > 0) && atTheEnd();
 	const auto switchToNext = !playOnce
 		|| (!lastDiceFrame && (_frameIndex != 0 || !_oncePlayed));
-	if (!context.paused
+	if (!paused
 		&& switchToNext
 		&& _player->markFrameShown()
 		&& playOnce
@@ -401,8 +410,7 @@ bool Sticker::mirrorHorizontal() const {
 	if (!hasPremiumEffect()) {
 		return false;
 	}
-	const auto rightAligned = _parent->hasOutLayout()
-		&& !_parent->delegate()->elementIsChatWide();
+	const auto rightAligned = _parent->hasRightLayout();
 	return !rightAligned;
 }
 
@@ -410,7 +418,7 @@ ClickHandlerPtr Sticker::ShowSetHandler(not_null<DocumentData*> document) {
 	return std::make_shared<LambdaClickHandler>([=](ClickContext context) {
 		const auto my = context.other.value<ClickHandlerContext>();
 		if (const auto window = my.sessionWindow.get()) {
-			StickerSetBox::Show(window, document);
+			StickerSetBox::Show(window->uiShow(), document);
 		}
 	});
 }
@@ -465,6 +473,10 @@ void Sticker::emojiStickerClicked() {
 
 void Sticker::premiumStickerClicked() {
 	_premiumEffectPlayed = false;
+
+	// Remove when we start playing sticker itself on click.
+	_premiumEffectSkipped = false;
+
 	_parent->history()->owner().requestViewRepaint(_parent);
 }
 
@@ -530,7 +542,12 @@ void Sticker::setupPlayer() {
 void Sticker::checkPremiumEffectStart() {
 	if (!_premiumEffectPlayed && hasPremiumEffect()) {
 		_premiumEffectPlayed = true;
-		_parent->delegate()->elementStartPremium(_parent, nullptr);
+		if (On(PowerSaving::kStickersChat)
+			&& !_premiumEffectSkipped) {
+			_premiumEffectSkipped = true;
+		} else {
+			_parent->delegate()->elementStartPremium(_parent, nullptr);
+		}
 	}
 }
 

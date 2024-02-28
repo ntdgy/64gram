@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flags.h"
 
 class ChannelData;
+enum class ChatRestriction;
 
 namespace style {
 struct ForumTopicIcon;
@@ -80,8 +81,6 @@ public:
 	[[nodiscard]] not_null<HistoryView::ListMemento*> listMemento();
 
 	[[nodiscard]] bool my() const;
-	[[nodiscard]] bool canWrite() const;
-	[[nodiscard]] bool canSendPolls() const;
 	[[nodiscard]] bool canEdit() const;
 	[[nodiscard]] bool canToggleClosed() const;
 	[[nodiscard]] bool canTogglePinned() const;
@@ -99,6 +98,7 @@ public:
 
 	void setRealRootId(MsgId realId);
 	void readTillEnd();
+	void requestChatListMessage();
 
 	void applyTopic(const MTPDforumTopic &data);
 
@@ -110,9 +110,9 @@ public:
 	Dialogs::BadgesState chatListBadgesState() const override;
 	HistoryItem *chatListMessage() const override;
 	bool chatListMessageKnown() const override;
-	void requestChatListMessage() override;
 	const QString &chatListName() const override;
 	const QString &chatListNameSortKey() const override;
+	int chatListNameVersion() const override;
 	const base::flat_set<QString> &chatListNameWords() const override;
 	const base::flat_set<QChar> &chatListFirstLetters() const override;
 
@@ -147,7 +147,7 @@ public:
 		return _notify;
 	}
 
-	void loadUserpic() override;
+	void chatListPreloadData() override;
 	void paintUserpic(
 		Painter &p,
 		Ui::PeerUserpicView &view,
@@ -170,6 +170,7 @@ private:
 		HasPinnedMessages = (1 << 3),
 		GeneralIconActive = (1 << 4),
 		GeneralIconSelected = (1 << 5),
+		ResolveChatListMessage = (1 << 6),
 	};
 	friend inline constexpr bool is_flag_type(Flag) { return true; }
 	using Flags = base::flags<Flag>;
@@ -184,8 +185,8 @@ private:
 	void setLastMessage(HistoryItem *item);
 	void setLastServerMessage(HistoryItem *item);
 	void setChatListMessage(HistoryItem *item);
-
-	int chatListNameVersion() const override;
+	void allowChatListMessageResolve();
+	void resolveChatListMessageGroup();
 
 	void subscribeToUnreadChanges();
 	[[nodiscard]] Dialogs::UnreadState unreadStateFor(

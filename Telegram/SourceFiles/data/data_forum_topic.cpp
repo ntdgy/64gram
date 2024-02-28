@@ -249,18 +249,6 @@ bool ForumTopic::my() const {
 	return (_flags & Flag::My);
 }
 
-bool ForumTopic::canWrite() const {
-	const auto channel = this->channel();
-	return channel->amIn()
-		&& !channel->amRestricted(ChatRestriction::SendMessages)
-		&& (!closed() || canToggleClosed());
-}
-
-bool ForumTopic::canSendPolls() const {
-	return canWrite()
-		&& !channel()->amRestricted(ChatRestriction::SendPolls);
-}
-
 bool ForumTopic::canEdit() const {
 	return my() || channel()->canManageTopics();
 }
@@ -483,22 +471,29 @@ void ForumTopic::applyTopicTopMessage(MsgId topMessageId) {
 		const auto itemId = FullMsgId(channel()->id, topMessageId);
 		if (const auto item = owner().message(itemId)) {
 			setLastServerMessage(item);
-
-			// If we set a single album part, request the full album.
-			if (item->groupId() != MessageGroupId()) {
-				if (owner().groups().isGroupOfOne(item)
-					&& !item->toPreview({
-						.hideSender = true,
-						.hideCaption = true }).images.empty()
-					&& _requestedGroups.emplace(item->fullId()).second) {
-					owner().histories().requestGroupAround(item);
-				}
-			}
+			resolveChatListMessageGroup();
 		} else {
 			setLastServerMessage(nullptr);
 		}
 	} else {
 		setLastServerMessage(nullptr);
+	}
+}
+
+void ForumTopic::resolveChatListMessageGroup() {
+	if (!(_flags & Flag::ResolveChatListMessage)) {
+		return;
+	}
+	// If we set a single album part, request the full album.
+	const auto item = _lastServerMessage.value_or(nullptr);
+	if (item && item->groupId() != MessageGroupId()) {
+		if (owner().groups().isGroupOfOne(item)
+			&& !item->toPreview({
+				.hideSender = true,
+				.hideCaption = true }).images.empty()
+				&& _requestedGroups.emplace(item->fullId()).second) {
+			owner().histories().requestGroupAround(item);
+		}
 	}
 }
 
@@ -560,10 +555,11 @@ void ForumTopic::setChatListMessage(HistoryItem *item) {
 	_forum->listMessageChanged(was, item);
 }
 
-void ForumTopic::loadUserpic() {
+void ForumTopic::chatListPreloadData() {
 	if (_icon) {
 		[[maybe_unused]] const auto preload = _icon->ready();
 	}
+	allowChatListMessageResolve();
 }
 
 void ForumTopic::paintUserpic(
@@ -771,6 +767,7 @@ void ForumTopic::maybeSetLastMessage(not_null<HistoryItem*> item) {
 	Expects(item->topicRootId() == _rootId);
 
 	if (!_lastMessage
+		|| !(*_lastMessage)
 		|| ((*_lastMessage)->date() < item->date())
 		|| ((*_lastMessage)->date() == item->date()
 			&& (*_lastMessage)->id < item->id)) {
@@ -850,6 +847,14 @@ Dialogs::UnreadState ForumTopic::unreadStateFor(
 	result.reactionsMuted = muted ? result.reactions : 0;
 	result.known = known;
 	return result;
+}
+
+void ForumTopic::allowChatListMessageResolve() {
+	if (_flags & Flag::ResolveChatListMessage) {
+		return;
+	}
+	_flags |= Flag::ResolveChatListMessage;
+	resolveChatListMessageGroup();
 }
 
 HistoryItem *ForumTopic::chatListMessage() const {

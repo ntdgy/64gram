@@ -8,19 +8,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "storage/storage_databases.h"
-#include "dialogs/dialogs_key.h"
-#include "dialogs/dialogs_indexed_list.h"
 #include "dialogs/dialogs_main_list.h"
 #include "data/data_groups.h"
 #include "data/data_cloud_file.h"
 #include "history/history_location_manager.h"
 #include "base/timer.h"
-#include "base/flags.h"
 
 class Image;
 class HistoryItem;
 struct WebPageCollage;
-enum class WebPageType;
+enum class WebPageType : uint8;
 enum class NewMessageType;
 
 namespace HistoryView {
@@ -63,6 +60,9 @@ class Stickers;
 class GroupCall;
 class NotifySettings;
 class CustomEmojiManager;
+class Stories;
+class SavedMessages;
+struct ReactionId;
 
 struct RepliesReadTillUpdate {
 	FullMsgId id;
@@ -135,6 +135,12 @@ public:
 	}
 	[[nodiscard]] CustomEmojiManager &customEmojiManager() const {
 		return *_customEmojiManager;
+	}
+	[[nodiscard]] Stories &stories() const {
+		return *_stories;
+	}
+	[[nodiscard]] SavedMessages &savedMessages() const {
+		return *_savedMessages;
 	}
 
 	[[nodiscard]] MsgId nextNonHistoryEntryId() {
@@ -275,9 +281,7 @@ public:
 	void requestItemViewRefresh(not_null<HistoryItem*> item);
 	[[nodiscard]] rpl::producer<not_null<HistoryItem*>> itemViewRefreshRequest() const;
 	void requestItemTextRefresh(not_null<HistoryItem*> item);
-	void requestAnimationPlayInline(not_null<HistoryItem*> item);
 	void requestUnreadReactionsAnimation(not_null<HistoryItem*> item);
-	[[nodiscard]] rpl::producer<not_null<HistoryItem*>> animationPlayInlineRequest() const;
 	void notifyHistoryUnloaded(not_null<const History*> history);
 	[[nodiscard]] rpl::producer<not_null<const History*>> historyUnloaded() const;
 	void notifyItemDataChange(not_null<HistoryItem*> item);
@@ -296,6 +300,10 @@ public:
 
 	void notifyPinnedDialogsOrderUpdated();
 	[[nodiscard]] rpl::producer<> pinnedDialogsOrderUpdated() const;
+
+	void registerHighlightProcess(
+		uint64 processId,
+		not_null<HistoryItem*> item);
 
 	void registerHeavyViewPart(not_null<ViewElement*> view);
 	void unregisterHeavyViewPart(not_null<ViewElement*> view);
@@ -342,25 +350,32 @@ public:
 		const QVector<MTPDialog> &dialogs,
 		std::optional<int> count = std::nullopt);
 
-	[[nodiscard]] bool pinnedCanPin(not_null<Thread*> thread) const;
+	[[nodiscard]] bool pinnedCanPin(not_null<Dialogs::Entry*> entry) const;
 	[[nodiscard]] bool pinnedCanPin(
 		FilterId filterId,
 		not_null<History*> history) const;
 	[[nodiscard]] int pinnedChatsLimit(Folder *folder) const;
 	[[nodiscard]] int pinnedChatsLimit(FilterId filterId) const;
 	[[nodiscard]] int pinnedChatsLimit(not_null<Forum*> forum) const;
+	[[nodiscard]] int pinnedChatsLimit(
+		not_null<SavedMessages*> saved) const;
 	[[nodiscard]] rpl::producer<int> maxPinnedChatsLimitValue(
 		Folder *folder) const;
 	[[nodiscard]] rpl::producer<int> maxPinnedChatsLimitValue(
 		FilterId filterId) const;
 	[[nodiscard]] rpl::producer<int> maxPinnedChatsLimitValue(
 		not_null<Forum*> forum) const;
+	[[nodiscard]] rpl::producer<int> maxPinnedChatsLimitValue(
+		not_null<SavedMessages*> saved) const;
+	[[nodiscard]] int groupFreeTranscribeLevel() const;
 	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
 		Folder *folder) const;
 	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
 		not_null<Forum*> forum) const;
 	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
 		FilterId filterId) const;
+	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
+		not_null<Data::SavedMessages*> saved) const;
 	void setChatPinned(Dialogs::Key key, FilterId filterId, bool pinned);
 	void setPinnedFromEntryList(Dialogs::Key key, bool pinned);
 	void clearPinnedChats(Folder *folder);
@@ -556,6 +571,7 @@ public:
 		WebPageCollage &&collage,
 		int duration,
 		const QString &author,
+		bool hasLargeMedia,
 		TimeId pendingTill);
 
 	[[nodiscard]] not_null<GameData*> game(GameId id);
@@ -571,6 +587,12 @@ public:
 	void gameConvert(
 		not_null<GameData*> original,
 		const MTPGame &data);
+
+	[[nodiscard]] not_null<BotAppData*> botApp(BotAppId id);
+	BotAppData *findBotApp(PeerId botId, const QString &appName) const;
+	BotAppData *processBotApp(
+		PeerId botId,
+		const MTPBotApp &data);
 
 	[[nodiscard]] not_null<PollData*> poll(PollId id);
 	not_null<PollData*> processPoll(const MTPPoll &data);
@@ -629,6 +651,9 @@ public:
 		not_null<HistoryItem*> item);
 	void registerCallItem(not_null<HistoryItem*> item);
 	void unregisterCallItem(not_null<HistoryItem*> item);
+	void registerStoryItem(FullStoryId id, not_null<HistoryItem*> item);
+	void unregisterStoryItem(FullStoryId id, not_null<HistoryItem*> item);
+	void refreshStoryItemViews(FullStoryId id);
 
 	void documentMessageRemoved(not_null<DocumentData*> document);
 
@@ -689,7 +714,8 @@ public:
 
 	void serviceNotification(
 		const TextWithEntities &message,
-		const MTPMessageMedia &media = MTP_messageMediaEmpty());
+		const MTPMessageMedia &media = MTP_messageMediaEmpty(),
+		bool invertMedia = false);
 
 	void setMimeForwardIds(MessageIdsList &&list);
 	MessageIdsList takeMimeForwardIds();
@@ -709,6 +735,19 @@ public:
 	};
 	void webViewResultSent(WebViewResultSent &&sent);
 	[[nodiscard]] rpl::producer<WebViewResultSent> webViewResultSent() const;
+
+	void saveViewAsMessages(not_null<Forum*> forum, bool viewAsMessages);
+
+	[[nodiscard]] auto peerDecorationsUpdated() const
+		-> rpl::producer<not_null<PeerData*>>;
+
+	void applyStatsDcId(not_null<ChannelData*>, MTP::DcId);
+	[[nodiscard]] MTP::DcId statsDcId(not_null<ChannelData*>);
+
+	void viewTagsChanged(
+		not_null<ViewElement*> view,
+		std::vector<ReactionId> &&was,
+		std::vector<ReactionId> &&now);
 
 	void clearLocalStorage();
 
@@ -803,11 +842,13 @@ private:
 		const QString &siteName,
 		const QString &title,
 		const TextWithEntities &description,
+		FullStoryId storyId,
 		PhotoData *photo,
 		DocumentData *document,
 		WebPageCollage &&collage,
 		int duration,
 		const QString &author,
+		bool hasLargeMedia,
 		TimeId pendingTill);
 
 	void gameApplyFields(
@@ -830,9 +871,11 @@ private:
 	void insertCheckedServiceNotification(
 		const TextWithEntities &message,
 		const MTPMessageMedia &media,
-		TimeId date);
+		TimeId date,
+		bool invertMedia);
 
 	void setWallpapers(const QVector<MTPWallPaper> &data, uint64 hash);
+	void highlightProcessDone(uint64 processId);
 
 	void checkPollsClosings();
 
@@ -845,6 +888,7 @@ private:
 	QPointer<Ui::BoxContent> _exportSuggestion;
 
 	rpl::variable<bool> _contactsLoaded = false;
+	rpl::variable<int> _groupFreeTranscribeLevel;
 	rpl::event_stream<Folder*> _chatsListLoadedEvents;
 	rpl::event_stream<Folder*> _chatsListChanged;
 	rpl::event_stream<not_null<UserData*>> _userIsBotChanges;
@@ -861,7 +905,6 @@ private:
 	rpl::event_stream<not_null<HistoryItem*>> _itemViewRefreshRequest;
 	rpl::event_stream<not_null<HistoryItem*>> _itemTextRefreshRequest;
 	rpl::event_stream<not_null<HistoryItem*>> _itemDataChanges;
-	rpl::event_stream<not_null<HistoryItem*>> _animationPlayInlineRequest;
 	rpl::event_stream<not_null<const HistoryItem*>> _itemRemoved;
 	rpl::event_stream<not_null<const ViewElement*>> _viewRemoved;
 	rpl::event_stream<not_null<const History*>> _historyUnloaded;
@@ -926,6 +969,9 @@ private:
 		GameId,
 		std::unique_ptr<GameData>> _games;
 	std::unordered_map<
+		BotAppId,
+		std::unique_ptr<BotAppData>> _botApps;
+	std::unordered_map<
 		not_null<const GameData*>,
 		base::flat_set<not_null<ViewElement*>>> _gameViews;
 	std::unordered_map<
@@ -938,6 +984,10 @@ private:
 		UserId,
 		base::flat_set<not_null<ViewElement*>>> _contactViews;
 	std::unordered_set<not_null<HistoryItem*>> _callItems;
+	std::unordered_map<
+		FullStoryId,
+		base::flat_set<not_null<HistoryItem*>>> _storyItems;
+	base::flat_map<uint64, not_null<HistoryItem*>> _highlightings;
 
 	base::flat_set<not_null<WebPageData*>> _webpagesUpdated;
 	base::flat_set<not_null<GameData*>> _gamesUpdated;
@@ -963,9 +1013,14 @@ private:
 
 	base::flat_map<uint64, not_null<GroupCall*>> _groupCalls;
 	rpl::event_stream<InviteToCall> _invitesToCalls;
-	base::flat_map<uint64, base::flat_set<not_null<UserData*>>> _invitedToCallUsers;
+	base::flat_map<
+		uint64,
+		base::flat_set<not_null<UserData*>>> _invitedToCallUsers;
 
 	base::flat_set<not_null<ViewElement*>> _shownSpoilers;
+	base::flat_map<
+		ReactionId,
+		base::flat_set<not_null<ViewElement*>>> _viewsByTag;
 
 	History *_topPromoted = nullptr;
 
@@ -984,7 +1039,14 @@ private:
 	base::flat_map<not_null<UserData*>, TimeId> _watchingForOffline;
 	base::Timer _watchForOfflineTimer;
 
+	base::flat_map<not_null<ChannelData*>, MTP::DcId> _channelStatsDcIds;
+
 	rpl::event_stream<WebViewResultSent> _webViewResultSent;
+
+	rpl::event_stream<not_null<PeerData*>> _peerDecorationsUpdated;
+	base::flat_map<
+		not_null<ChannelData*>,
+		mtpRequestId> _viewAsMessagesRequests;
 
 	Groups _groups;
 	const std::unique_ptr<ChatFilters> _chatsFilters;
@@ -1001,6 +1063,8 @@ private:
 	const std::unique_ptr<ForumIcons> _forumIcons;
 	const std::unique_ptr<NotifySettings> _notifySettings;
 	const std::unique_ptr<CustomEmojiManager> _customEmojiManager;
+	const std::unique_ptr<Stories> _stories;
+	const std::unique_ptr<SavedMessages> _savedMessages;
 
 	MsgId _nonHistoryEntryId = ServerMaxMsgId.bare + ScheduledMsgIdsRange;
 

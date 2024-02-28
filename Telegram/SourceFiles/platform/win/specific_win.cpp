@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/win/windows_autostart_task.h"
 #include "base/platform/base_platform_info.h"
 #include "base/platform/win/base_windows_co_task_mem.h"
+#include "base/platform/win/base_windows_shlobj_h.h"
 #include "base/platform/win/base_windows_winrt.h"
 #include "base/call_delayed.h"
 #include "ui/boxes/confirm_box.h"
@@ -41,7 +42,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <openssl/err.h>
 
 #include <dbghelp.h>
-#include <shlobj.h>
 #include <Shlwapi.h>
 #include <Strsafe.h>
 #include <Windowsx.h>
@@ -57,6 +57,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <functiondiscoverykeys.h>
 #include <intsafe.h>
 #include <guiddef.h>
+#include <locale.h>
 
 #ifndef DCX_USESTYLE
 #define DCX_USESTYLE 0x00010000
@@ -68,7 +69,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #define WM_NCPOINTERUP 0x0243
 #endif
 
-using namespace Platform;
+using namespace ::Platform;
 
 namespace {
 
@@ -77,24 +78,39 @@ bool finished = true;
 QMargins simpleMargins, margins;
 HICON bigIcon = 0, smallIcon = 0, overlayIcon = 0;
 
-BOOL CALLBACK ActivateProcessByPid(HWND hWnd, LPARAM lParam) {
-	uint64 &processId(*(uint64*)lParam);
+[[nodiscard]] uint64 WindowIdFromHWND(HWND value) {
+	return (reinterpret_cast<uint64>(value) & 0xFFFFFFFFULL);
+}
+
+struct FindToActivateRequest {
+	uint64 processId = 0;
+	uint64 windowId = 0;
+	HWND result = nullptr;
+	uint32 resultLevel = 0; // Larger is better.
+};
+
+BOOL CALLBACK FindToActivate(HWND hwnd, LPARAM lParam) {
+	const auto request = reinterpret_cast<FindToActivateRequest*>(lParam);
 
 	DWORD dwProcessId;
-	::GetWindowThreadProcessId(hWnd, &dwProcessId);
+	::GetWindowThreadProcessId(hwnd, &dwProcessId);
 
-	if ((uint64)dwProcessId == processId) { // found top-level window
-		static const int32 nameBufSize = 1024;
-		WCHAR nameBuf[nameBufSize];
-		int32 len = GetWindowText(hWnd, nameBuf, nameBufSize);
-		if (len && len < nameBufSize) {
-			if (QRegularExpression(u"^Telegram(\\s*\\(\\d+\\))?$"_q).match(QString::fromStdWString(nameBuf)).hasMatch()) {
-				BOOL res = ::SetForegroundWindow(hWnd);
-				::SetFocus(hWnd);
-				return FALSE;
-			}
-		}
+	if ((uint64)dwProcessId != request->processId) {
+		return TRUE;
 	}
+	// Found a Top-Level window.
+	auto level = 0;
+	if (WindowIdFromHWND(hwnd) == request->windowId) {
+		request->result = hwnd;
+		request->resultLevel = 3;
+		return FALSE;
+	}
+	const auto data = static_cast<uint32>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+	if ((data != 1 && data != 2) || (data <= request->resultLevel)) {
+		return TRUE;
+	}
+	request->result = hwnd;
+	request->resultLevel = data;
 	return TRUE;
 }
 
@@ -179,8 +195,7 @@ bool ManageAppLink(
 		return true;
 	}
 	const auto shellLink = base::WinRT::TryCreateInstance<IShellLink>(
-		CLSID_ShellLink,
-		CLSCTX_INPROC_SERVER);
+		CLSID_ShellLink);
 	if (!shellLink) {
 		if (!silent) LOG(("App Error: could not create instance of IID_IShellLink %1").arg(hr));
 		return false;
@@ -193,9 +208,9 @@ bool ManageAppLink(
 
 	if (const auto propertyStore = shellLink.try_as<IPropertyStore>()) {
 		PROPVARIANT appIdPropVar;
-		hr = InitPropVariantFromString(AppUserModelId::getId(), &appIdPropVar);
+		hr = InitPropVariantFromString(AppUserModelId::Id().c_str(), &appIdPropVar);
 		if (SUCCEEDED(hr)) {
-			hr = propertyStore->SetValue(AppUserModelId::getKey(), appIdPropVar);
+			hr = propertyStore->SetValue(AppUserModelId::Key(), appIdPropVar);
 			PropVariantClear(&appIdPropVar);
 			if (SUCCEEDED(hr)) {
 				hr = propertyStore->Commit();
@@ -217,12 +232,6 @@ bool ManageAppLink(
 }
 
 } // namespace
-
-void psActivateProcess(uint64 pid) {
-	if (pid) {
-		::EnumWindows((WNDENUMPROC)ActivateProcessByPid, (LPARAM)&pid);
-	}
-}
 
 QString psAppDataPath() {
 	static const int maxFileLen = MAX_PATH * 10;
@@ -252,7 +261,7 @@ void psDoCleanup() {
 	try {
 		Platform::AutostartToggle(false);
 		psSendToMenu(false, true);
-		AppUserModelId::cleanupShortcut();
+		AppUserModelId::CleanupShortcut();
 		DeleteMyModules();
 	} catch (...) {
 	}
@@ -358,6 +367,12 @@ void start() {
 } // namespace ThirdParty
 
 void start() {
+	// https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/setlocale-wsetlocale#utf-8-support
+	setlocale(LC_ALL, ".UTF8");
+
+	const auto appUserModelId = AppUserModelId::Id();
+	SetCurrentProcessExplicitAppUserModelID(appUserModelId.c_str());
+	LOG(("AppUserModelID: %1").arg(appUserModelId));
 }
 
 void finish() {
@@ -371,6 +386,7 @@ QString SingleInstanceLocalServerName(const QString &hash) {
 	return u"Global\\"_q + hash + '-' + cGUIDStr();
 }
 
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 std::optional<bool> IsDarkMode() {
 	static const auto kSystemVersion = QOperatingSystemVersion::current();
 	static const auto kDarkModeAddedVersion = QOperatingSystemVersion(
@@ -401,6 +417,7 @@ std::optional<bool> IsDarkMode() {
 
 	return (value == 0);
 }
+#endif // Qt < 6.5.0
 
 bool AutostartSupported() {
 	return true;
@@ -464,7 +481,7 @@ bool AutostartSkip() {
 }
 
 void WriteCrashDumpDetails() {
-#ifndef DESKTOP_APP_DISABLE_CRASH_REPORTS
+#ifndef TDESKTOP_DISABLE_CRASH_REPORTS
 	PROCESS_MEMORY_COUNTERS data = { 0 };
 	if (Dlls::GetProcessMemoryInfo
 		&& Dlls::GetProcessMemoryInfo(
@@ -485,7 +502,30 @@ void WriteCrashDumpDetails() {
 			<< (data.PagefileUsage / mb)
 			<< " MB (current)\n";
 	}
-#endif // DESKTOP_APP_DISABLE_CRASH_REPORTS
+#endif // TDESKTOP_DISABLE_CRASH_REPORTS
+}
+
+void SetWindowPriority(not_null<QWidget*> window, uint32 priority) {
+	const auto hwnd = reinterpret_cast<HWND>(window->winId());
+	Assert(hwnd != nullptr);
+
+	SetWindowLongPtr(hwnd, GWLP_USERDATA, static_cast<LONG_PTR>(priority));
+}
+
+uint64 ActivationWindowId(not_null<QWidget*> window) {
+	return WindowIdFromHWND(reinterpret_cast<HWND>(window->winId()));
+}
+
+void ActivateOtherProcess(uint64 processId, uint64 windowId) {
+	auto request = FindToActivateRequest{
+		.processId = processId,
+		.windowId = windowId,
+	};
+	::EnumWindows((WNDENUMPROC)FindToActivate, (LPARAM)&request);
+	if (const auto hwnd = request.result) {
+		::SetForegroundWindow(hwnd);
+		::SetFocus(hwnd);
+	}
 }
 
 } // namespace Platform
@@ -601,8 +641,8 @@ bool OpenSystemSettings(SystemSettingsType type) {
 }
 
 void NewVersionLaunched(int oldVersion) {
-	if (oldVersion < 8051) {
-		AppUserModelId::checkPinned();
+	if (oldVersion <= 4009009) {
+		AppUserModelId::CheckPinned();
 	}
 	if (oldVersion > 0 && oldVersion < 2008012) {
 		// Reset icons cache, because we've changed the application icon.
@@ -614,6 +654,10 @@ void NewVersionLaunched(int oldVersion) {
 				nullptr);
 		}
 	}
+}
+
+QImage DefaultApplicationIcon() {
+	return Window::Logo();
 }
 
 } // namespace Platform
@@ -642,7 +686,10 @@ bool psLaunchMaps(const Data::LocationPoint &point) {
 		AT_URLPROTOCOL,
 		AL_EFFECTIVE,
 		handler.put());
-	if (FAILED(result) || !handler) {
+	if (FAILED(result)
+		|| !handler
+		|| !handler.data()
+		|| std::wstring(handler.data()) == L"bingmaps") {
 		return false;
 	}
 

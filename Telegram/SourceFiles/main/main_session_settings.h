@@ -75,6 +75,16 @@ public:
 		_groupStickersSectionHidden.remove(peerId);
 	}
 
+	void setGroupEmojiSectionHidden(PeerId peerId) {
+		_groupEmojiSectionHidden.insert(peerId);
+	}
+	[[nodiscard]] bool isGroupEmojiSectionHidden(PeerId peerId) const {
+		return _groupEmojiSectionHidden.contains(peerId);
+	}
+	void removeGroupEmojiSectionHidden(PeerId peerId) {
+		_groupEmojiSectionHidden.remove(peerId);
+	}
+
 	void setMediaLastPlaybackPosition(DocumentId id, crl::time time);
 	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
 
@@ -122,13 +132,6 @@ public:
 	[[nodiscard]] std::vector<TimeId> mutePeriods() const;
 	void addMutePeriod(TimeId period);
 
-	[[nodiscard]] bool skipPremiumStickersSet() const {
-		return _skipPremiumStickersSet;
-	}
-	void setSkipPremiumStickersSet(bool value) {
-		_skipPremiumStickersSet = value;
-	}
-
 private:
 	static constexpr auto kDefaultSupportChatsLimitSlice = 7 * 24 * 60 * 60;
 	static constexpr auto kPhotoEditorHintMaxShowsCount = 5;
@@ -144,6 +147,7 @@ private:
 
 	ChatHelpers::SelectorTab _selectorTab; // per-window
 	base::flat_set<PeerId> _groupStickersSectionHidden;
+	base::flat_set<PeerId> _groupEmojiSectionHidden;
 	bool _hadLegacyCallsPeerToPeerNobody = false;
 	Data::AutoDownload::Full _autoDownload;
 	rpl::variable<bool> _archiveCollapsed = false;
@@ -154,7 +158,6 @@ private:
 	bool _dialogsFiltersEnabled = false;
 	int _photoEditorHintShowsCount = 0;
 	std::vector<TimeId> _mutePeriods;
-	bool _skipPremiumStickersSet = false;
 
 	Support::SwitchSettings _supportSwitch;
 	bool _supportFixChatsOrder = true;
