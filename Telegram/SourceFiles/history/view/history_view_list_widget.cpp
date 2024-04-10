@@ -1735,7 +1735,7 @@ void ListWidget::elementHandleViaClick(not_null<UserData*> bot) {
 }
 
 bool ListWidget::elementIsChatWide() {
-	return _isChatWide;
+	return _overrideIsChatWide.value_or(_isChatWide);
 }
 
 not_null<Ui::PathShiftGradient*> ListWidget::elementPathShiftGradient() {
@@ -1793,7 +1793,7 @@ void ListWidget::updateItemsGeometry() {
 			if (view->isHidden()) {
 				view->setDisplayDate(false);
 			} else {
-				view->setDisplayDate(true);
+				view->setDisplayDate(_context != Context::ShortcutMessages);
 				view->setAttachToPrevious(false);
 				return i;
 			}
@@ -1840,16 +1840,18 @@ void ListWidget::startItemRevealAnimations() {
 void ListWidget::startMessageSendingAnimation(
 		not_null<HistoryItem*> item) {
 	auto &sendingAnimation = controller()->sendingAnimation();
-	if (!sendingAnimation.hasLocalMessage(item->fullId().msg)
-		|| !sendingAnimation.checkExpectedType(item)) {
+	if (!sendingAnimation.checkExpectedType(item)) {
 		return;
 	}
 
 	auto globalEndTopLeft = rpl::merge(
 		session().data().newItemAdded() | rpl::to_empty,
 		geometryValue() | rpl::to_empty
-	) | rpl::map([=] {
+	) | rpl::map([=]() -> std::optional<QPoint> {
 		const auto view = viewForItem(item);
+		if (!view) {
+			return std::nullopt;
+		}
 		const auto additional = !_visibleTop ? view->height() : 0;
 		return mapToGlobal(QPoint(0, itemTop(view) - additional));
 	});
@@ -1938,6 +1940,9 @@ int ListWidget::resizeGetHeight(int newWidth) {
 	_itemsTop = (_minHeight > _itemsHeight + st::historyPaddingBottom)
 		? (_minHeight - _itemsHeight - st::historyPaddingBottom)
 		: 0;
+	if (_emptyInfo) {
+		_emptyInfo->setVisible(isEmpty());
+	}
 	return _itemsTop + _itemsHeight + st::historyPaddingBottom;
 }
 
@@ -2049,7 +2054,8 @@ void ListWidget::checkActivation() {
 }
 
 void ListWidget::paintEvent(QPaintEvent *e) {
-	if (_controller->contentOverlapped(this, e)) {
+	if ((_context != Context::ShortcutMessages)
+		&& _controller->contentOverlapped(this, e)) {
 		return;
 	}
 
@@ -2163,6 +2169,21 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 	context.translate(0, top);
 	p.translate(0, -top);
 
+	paintUserpics(p, context, clip);
+	paintDates(p, context, clip);
+
+	_reactionsManager->paint(p, context);
+	_emojiInteractions->paint(p);
+}
+
+void ListWidget::paintUserpics(
+		Painter &p,
+		const Ui::ChatPaintContext &context,
+		QRect clip) {
+	if (_context == Context::ShortcutMessages) {
+		return;
+	}
+	const auto session = &controller()->session();
 	enumerateUserpics([&](not_null<Element*> view, int userpicTop) {
 		// stop the enumeration if the userpic is below the painted rect
 		if (userpicTop >= clip.top() + clip.height()) {
@@ -2207,6 +2228,15 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 		}
 		return true;
 	});
+}
+
+void ListWidget::paintDates(
+		Painter &p,
+		const Ui::ChatPaintContext &context,
+		QRect clip) {
+	if (_context == Context::ShortcutMessages) {
+		return;
+	}
 
 	auto dateHeight = st::msgServicePadding.bottom() + st::msgServiceFont->height + st::msgServicePadding.top();
 	auto scrollDateOpacity = _scrollDateOpacity.value(_scrollDateShown ? 1. : 0.);
@@ -2253,9 +2283,6 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 		}
 		return true;
 	});
-
-	_reactionsManager->paint(p, context);
-	_emojiInteractions->paint(p);
 }
 
 void ListWidget::maybeMarkReactionsRead(not_null<HistoryItem*> item) {
@@ -2399,6 +2426,11 @@ MessageIdsList ListWidget::getSelectedIds() const {
 
 SelectedItems ListWidget::getSelectedItems() const {
 	return collectSelectedItems();
+}
+
+const TextSelection &ListWidget::getSelectedTextRange(
+		not_null<HistoryItem*> item) const {
+	return _selectedTextRange;
 }
 
 int ListWidget::findItemIndexByY(int y) const {
@@ -3738,7 +3770,8 @@ void ListWidget::refreshAttachmentsFromTill(int from, int till) {
 		} else {
 			const auto viewDate = view->dateTime();
 			const auto nextDate = next->dateTime();
-			next->setDisplayDate(nextDate.date() != viewDate.date());
+			next->setDisplayDate(_context != Context::ShortcutMessages
+				&& nextDate.date() != viewDate.date());
 			auto attached = next->computeIsAttachToPrevious(view);
 			next->setAttachToPrevious(attached, view);
 			view->setAttachToNext(attached, next);
@@ -3933,6 +3966,13 @@ void ListWidget::replyNextMessage(FullMsgId fullId, bool next) {
 
 void ListWidget::setEmptyInfoWidget(base::unique_qptr<Ui::RpWidget> &&w) {
 	_emptyInfo = std::move(w);
+	if (_emptyInfo) {
+		_emptyInfo->setVisible(isEmpty());
+	}
+}
+
+void ListWidget::overrideIsChatWide(bool isWide) {
+	_overrideIsChatWide = isWide;
 }
 
 ListWidget::~ListWidget() {
